@@ -56,6 +56,10 @@ pub async fn update_profile(
             activity_level = COALESCE($6, activity_level),
             goal = COALESCE($7, goal),
             target_weight_kg = COALESCE($8, target_weight_kg),
+            -- An empty array is not NULL, so an explicit empty choice survives
+            -- the COALESCE that means the field was omitted entirely.
+            shown_nutrients = COALESCE($9, shown_nutrients),
+            chart_nutrients = COALESCE($10, chart_nutrients),
             updated_at = now()
          WHERE id = $1
          RETURNING {USER_COLUMNS}"
@@ -68,6 +72,16 @@ pub async fn update_profile(
     .bind(body.activity_level.as_deref())
     .bind(body.goal.as_deref())
     .bind(body.target_weight_kg)
+    .bind(
+        body.shown_nutrients
+            .as_deref()
+            .map(UpdateProfileRequest::nutrient_keys),
+    )
+    .bind(
+        body.chart_nutrients
+            .as_deref()
+            .map(UpdateProfileRequest::nutrient_keys),
+    )
     .fetch_optional(&state.db)
     .await?
     .ok_or(ApiError::NotFound("user"))?;

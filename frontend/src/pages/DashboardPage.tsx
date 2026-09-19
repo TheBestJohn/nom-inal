@@ -15,9 +15,18 @@ import { useAuth } from '@/lib/auth'
 import { addDays, kcal, kg, shortDate, signed, today } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
-import { Card, CardAction, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import {
+  Card,
+  CardAction,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from '@/components/ui/card'
 import { Separator } from '@/components/ui/separator'
 import { Empty, ErrorNote, MacroRow, Spinner, TargetList } from '@/components/shared'
+import { nutrientValue, orderNutrients } from '@/lib/nutrients'
+import type { DiarySummary, Nutrient } from '@/api/types'
 import ReminderBanner from '@/components/ReminderBanner'
 
 /** Recharts takes colours as values, not classes, so they come from the theme
@@ -28,6 +37,61 @@ const TOOLTIP_STYLE = {
   borderRadius: 'var(--radius)',
   color: 'var(--popover-foreground)',
   fontSize: 12,
+}
+
+/**
+ * One nutrient over the window: a single series, its own axis, its own unit.
+ *
+ * Declared here rather than inside the page because a component defined in a
+ * render body is a new type on every render, which would remount the chart --
+ * and recharts animates from scratch each time it mounts.
+ */
+function NutrientChart({
+  nutrient,
+  label,
+  unit,
+  color,
+  summary,
+  sole,
+}: {
+  nutrient: Nutrient
+  label: string
+  unit: string
+  color: string
+  summary?: DiarySummary
+  sole: boolean
+}) {
+  const series = (summary?.days ?? []).map((d) => ({
+    date: shortDate(d.date),
+    value: Math.round(nutrientValue(d.total, nutrient)),
+  }))
+
+  return (
+    <figure className="space-y-1">
+      <figcaption className="text-muted-foreground text-xs">
+        {label} <span className="opacity-70">({unit})</span>
+      </figcaption>
+      <ResponsiveContainer width="100%" height={sole ? 220 : 160}>
+        <LineChart data={series} margin={{ top: 8, right: 8, bottom: 0, left: -12 }}>
+          <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
+          <XAxis dataKey="date" stroke="var(--muted-foreground)" fontSize={12} tickMargin={8} />
+          <YAxis stroke="var(--muted-foreground)" fontSize={12} width={52} />
+          <Tooltip contentStyle={TOOLTIP_STYLE} formatter={(v) => [`${v} ${unit}`, label]} />
+          {/* No dot on every point: thirty of them is noise, and the hover
+              layer is what answers "what was Tuesday". */}
+          <Line
+            type="monotone"
+            dataKey="value"
+            name={label}
+            stroke={color}
+            strokeWidth={2}
+            dot={false}
+            activeDot={{ r: 4 }}
+          />
+        </LineChart>
+      </ResponsiveContainer>
+    </figure>
+  )
 }
 
 export default function DashboardPage() {
@@ -57,10 +121,7 @@ export default function DashboardPage() {
     .reverse()
     .map((w) => ({ date: shortDate(w.recorded_on), kg: w.weight_kg }))
 
-  const calorieSeries = (summary.data?.days ?? []).map((d) => ({
-    date: shortDate(d.date),
-    kcal: Math.round(d.total.calories_kcal),
-  }))
+  const charted = orderNutrients(user?.chart_nutrients ?? (['calories_kcal'] as Nutrient[]))
 
   return (
     <div className="space-y-4">
@@ -164,30 +225,49 @@ export default function DashboardPage() {
 
       <Card>
         <CardHeader>
-          <CardTitle>Calories, last 30 days</CardTitle>
+          <CardTitle>Last 30 days</CardTitle>
+          <CardDescription>
+            One chart per nutrient you follow. Change which in{' '}
+            <Link to="/settings" className="text-primary underline underline-offset-4">
+              Settings
+            </Link>
+            .
+          </CardDescription>
         </CardHeader>
         <CardContent className="space-y-3">
           {summary.isLoading && <Spinner />}
           <ErrorNote error={summary.error} />
-          {calorieSeries.length === 0 ? (
+          {charted.length === 0 ? (
+            <Empty>No nutrients selected to chart.</Empty>
+          ) : (summary.data?.days.length ?? 0) === 0 ? (
             <Empty>Nothing logged in this window yet.</Empty>
           ) : (
             <>
-              <ResponsiveContainer width="100%" height={220}>
-                <LineChart data={calorieSeries} margin={{ top: 8, right: 8, bottom: 0, left: -12 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
-                  <XAxis dataKey="date" stroke="var(--muted-foreground)" fontSize={12} tickMargin={8} />
-                  <YAxis stroke="var(--muted-foreground)" fontSize={12} width={52} />
-                  <Tooltip contentStyle={TOOLTIP_STYLE} />
-                  <Line
-                    type="monotone"
-                    dataKey="kcal"
-                    stroke="var(--chart-1)"
-                    strokeWidth={2}
-                    dot={{ r: 2 }}
+              {/* Small multiples rather than several lines on one pair of axes.
+                  Calories run to a couple of thousand and fat to about seventy,
+                  so a shared y-axis would flatten every macro onto the floor and
+                  a second axis would invite comparing two scales that have
+                  nothing to do with each other. Each nutrient gets its own axis
+                  and its own unit; the heading carries the identity, so no
+                  legend is needed and colour is never doing the work alone. */}
+              <div
+                className={cn(
+                  'grid gap-4',
+                  charted.length > 1 && 'sm:grid-cols-2',
+                )}
+              >
+                {charted.map((meta) => (
+                  <NutrientChart
+                    key={meta.key}
+                    nutrient={meta.key}
+                    label={meta.label}
+                    unit={meta.unit}
+                    color={meta.color}
+                    summary={summary.data}
+                    sole={charted.length === 1}
                   />
-                </LineChart>
-              </ResponsiveContainer>
+                ))}
+              </div>
               <Separator />
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <span className="text-muted-foreground text-xs">

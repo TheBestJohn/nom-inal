@@ -63,6 +63,41 @@ expect "update profile" \
       -d '{"height_cm":180,"target_weight_kg":78}' | j "['height_cm']")" \
   "180.0"
 
+# Which nutrients to show is a fact about your diet, not your device, so it
+# lives on the account rather than in one browser's storage.
+expect "readouts default to calories and macros" \
+  "$(curl -fsS "$BASE/profile" -H "$AUTH" | j "['shown_nutrients']")" \
+  "['calories_kcal', 'protein_g', 'carbs_g', 'fat_g']"
+expect "and the home chart to calories alone" \
+  "$(curl -fsS "$BASE/profile" -H "$AUTH" | j "['chart_nutrients']")" "['calories_kcal']"
+
+PREFS=$(curl -fsS -X PATCH "$BASE/profile" -H "$AUTH" -H 'content-type: application/json' \
+  -d '{"shown_nutrients":["sodium_mg","calories_kcal","fiber_g"],"chart_nutrients":["protein_g","calories_kcal"]}')
+# Stored in the application's canonical order, so two accounts that picked the
+# same set in a different sequence read back the same.
+expect "a chosen set is normalised"  "$(echo "$PREFS" | j "['shown_nutrients']")" "['calories_kcal', 'fiber_g', 'sodium_mg']"
+expect "and so is the chart set"     "$(echo "$PREFS" | j "['chart_nutrients']")" "['calories_kcal', 'protein_g']"
+expect "it survives a reload"        "$(curl -fsS "$BASE/profile" -H "$AUTH" | j "['shown_nutrients']")" "['calories_kcal', 'fiber_g', 'sodium_mg']"
+
+expect "duplicates collapse" \
+  "$(curl -fsS -X PATCH "$BASE/profile" -H "$AUTH" -H 'content-type: application/json' \
+      -d '{"shown_nutrients":["fat_g","fat_g","fat_g"]}' | j "['shown_nutrients']")" \
+  "['fat_g']"
+expect "showing nothing is a real choice, not 'unset'" \
+  "$(curl -fsS -X PATCH "$BASE/profile" -H "$AUTH" -H 'content-type: application/json' \
+      -d '{"shown_nutrients":[]}' | j "['shown_nutrients']")" \
+  "[]"
+expect "omitting the field leaves it alone" \
+  "$(curl -fsS -X PATCH "$BASE/profile" -H "$AUTH" -H 'content-type: application/json' \
+      -d '{"height_cm":181}' | j "['shown_nutrients']")" \
+  "[]"
+status "an unknown nutrient is refused" 400 -X PATCH "$BASE/profile" -H "$AUTH" -H 'content-type: application/json' \
+  -d '{"shown_nutrients":["vitamin_q"]}'
+
+# Put it back so the rest of the run sees the usual readout.
+curl -fsS -X PATCH "$BASE/profile" -H "$AUTH" -H 'content-type: application/json' \
+  -d '{"shown_nutrients":["calories_kcal","protein_g","carbs_g","fat_g"],"chart_nutrients":["calories_kcal"]}' >/dev/null
+
 echo "== goals and budgets"
 # A budget is a ceiling, a goal is a floor. The same arithmetic, read in
 # opposite directions -- which is the whole point of storing the direction.

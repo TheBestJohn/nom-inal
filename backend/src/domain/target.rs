@@ -54,6 +54,18 @@ pub enum Nutrient {
 }
 
 /// Display order: calories, then the three macros, then the rest.
+/// What the macro readouts show when nobody has said otherwise: the figure
+/// people actually budget, and the three macros that make it up.
+pub const DEFAULT_SHOWN_NUTRIENTS: [Nutrient; 4] = [
+    Nutrient::CaloriesKcal,
+    Nutrient::ProteinG,
+    Nutrient::CarbsG,
+    Nutrient::FatG,
+];
+
+/// What the home page plots by default — one line, as it always has.
+pub const DEFAULT_CHART_NUTRIENTS: [Nutrient; 1] = [Nutrient::CaloriesKcal];
+
 pub const ALL_NUTRIENTS: [Nutrient; 8] = [
     Nutrient::CaloriesKcal,
     Nutrient::ProteinG,

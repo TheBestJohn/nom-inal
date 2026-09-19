@@ -27,6 +27,7 @@ Rust (Axum) API + Postgres + React SPA, all behind one `docker compose up`.
 | **Barcode lookup** | Type or scan a UPC/EAN and import the product in one click |
 | **Progress photos** | Attach photos to a weigh-in. Downscaled and re-encoded on upload, which strips EXIF — phone photos carry GPS |
 | **Reminders** | "It's been three weeks since your last weigh-in", at a cadence you set |
+| **Choose what you see** | Every food stores eight nutrients; pick which reach the screen, and which get a chart on the home page. Kept on your account, so it follows you between devices |
 | **Dark mode** | Follows your OS by default, with a toggle that overrides it. Applied before first paint, so there is no flash of the wrong theme |
 | **Goals & budgets** | Per-nutrient daily targets that point in a direction: a **budget** is a ceiling to stay under, a **goal** is a floor to reach. Covers calories, the three macros, fibre, sugar, saturated fat and sodium |
 | **Accounts** | Email + password sign-up, Argon2id hashing, closable once your accounts exist |
@@ -271,6 +272,20 @@ three ingredients is worse than one with no macros at all. So the count travels
 with the numbers, out of the same walk that produced them, and counts the ones
 inside sub-recipes too — those are the ones you cannot see from the page you are
 reading.
+
+**The home page uses small multiples, never a shared axis.** Calories run to a
+couple of thousand and fat to about seventy, so plotting them together would
+flatten every macro onto the floor, and a second y-axis would invite comparing
+two scales that have nothing to do with each other. Each charted nutrient gets
+its own chart, its own axis and its own unit; the heading carries the identity,
+so no legend is needed and colour is never doing the work alone.
+
+The nutrient colours are checked with a palette validator rather than by eye.
+The first attempt reused the existing `--chart-*` tokens, which hold the same
+values as the macro colours — protein and sodium came out identical side by
+side. The second put sodium and saturated fat at ΔE 0.7 under deuteranopia:
+indistinguishable to a red-green colourblind reader, and fine to me. Both modes
+now pass, stepped separately against their own surface rather than flipped.
 
 **Diary entries are a strict XOR.** An entry is either *a food, in grams* or *a
 recipe, in servings*, enforced by a database `CHECK` as well as by the handler,

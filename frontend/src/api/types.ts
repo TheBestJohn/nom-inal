@@ -21,6 +21,10 @@ export interface Profile {
   target_weight_kg: number | null
   /** Whether to show the admin area. The server re-checks on every call. */
   is_admin: boolean
+  /** Nutrients the macro readouts should show. Always resolved by the server. */
+  shown_nutrients: Nutrient[]
+  /** Nutrients the home page plots, one small chart each. */
+  chart_nutrients: Nutrient[]
   created_at: string
 }
 

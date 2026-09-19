@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { X } from 'lucide-react'
 
 import { api } from '@/api/endpoints'
+import { NUTRIENTS } from '@/lib/nutrients'
 import type { TargetInput } from '@/api/endpoints'
 import type { Nutrient, TargetKind } from '@/api/types'
 import { cn } from '@/lib/utils'
@@ -21,22 +22,7 @@ import { ErrorNote, Spinner } from '@/components/shared'
  * things you try to stay under. Every one can be flipped — carbs are a budget
  * when cutting and a goal when bulking.
  */
-const NUTRIENTS: {
-  key: Nutrient
-  label: string
-  unit: string
-  defaultKind: TargetKind
-  hint?: string
-}[] = [
-  { key: 'calories_kcal', label: 'Calories', unit: 'kcal', defaultKind: 'budget' },
-  { key: 'protein_g', label: 'Protein', unit: 'g', defaultKind: 'goal' },
-  { key: 'carbs_g', label: 'Carbs', unit: 'g', defaultKind: 'budget' },
-  { key: 'fat_g', label: 'Fat', unit: 'g', defaultKind: 'budget' },
-  { key: 'fiber_g', label: 'Fiber', unit: 'g', defaultKind: 'goal', hint: '25–38 g is typical' },
-  { key: 'sugar_g', label: 'Sugar', unit: 'g', defaultKind: 'budget' },
-  { key: 'saturated_fat_g', label: 'Saturated fat', unit: 'g', defaultKind: 'budget' },
-  { key: 'sodium_mg', label: 'Sodium', unit: 'mg', defaultKind: 'budget', hint: '2300 mg is the usual cap' },
-]
+
 
 /** A row in the editor. A blank amount means "no target for this nutrient". */
 interface Row {

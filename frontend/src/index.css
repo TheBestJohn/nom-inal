@@ -36,6 +36,16 @@
   --protein: oklch(0.55 0.13 250);
   --carbs: oklch(0.62 0.12 70);
   --fat: oklch(0.55 0.15 300);
+  /* The extended nutrients get their own hues rather than borrowing --chart-2
+     to --chart-5, which hold the same values as the macro colours above —
+     reused there, protein and sodium rendered identically side by side.
+     Checked with the palette validator, not by eye: the first attempt put
+     sodium and saturated fat at ΔE 0.7 under deuteranopia, which looks fine to
+     me and is a single colour to a red-green colourblind reader. */
+  --fiber: oklch(0.52 0.1 158);
+  --sugar: oklch(0.58 0.2 27);
+  --satfat: oklch(0.6 0.12 195);
+  --sodium: oklch(0.5 0.17 340);
   --success: oklch(0.55 0.13 155);
 
   --chart-1: oklch(0.52 0.09 158);
@@ -68,9 +78,17 @@
   --ring: oklch(0.7 0.12 158);
 
   --kcal: oklch(0.85 0.01 250);
-  --protein: oklch(0.72 0.13 250);
-  --carbs: oklch(0.78 0.12 70);
-  --fat: oklch(0.73 0.14 300);
+  /* Stepped for the dark surface rather than flipped from the light values,
+     and darker than they used to be: at L 0.72–0.78 the three macro colours
+     sat above the band that reads as a series rather than a glare on a dark
+     background, which the new nutrients then had to sit alongside. */
+  --protein: oklch(0.65 0.14 250);
+  --carbs: oklch(0.66 0.13 70);
+  --fat: oklch(0.62 0.16 300);
+  --fiber: oklch(0.62 0.12 158);
+  --sugar: oklch(0.6 0.19 27);
+  --satfat: oklch(0.66 0.12 195);
+  --sodium: oklch(0.53 0.17 340);
   --success: oklch(0.72 0.14 155);
 
   --chart-1: oklch(0.7 0.12 158);
@@ -106,6 +124,10 @@
   --color-protein: var(--protein);
   --color-carbs: var(--carbs);
   --color-fat: var(--fat);
+  --color-fiber: var(--fiber);
+  --color-sugar: var(--sugar);
+  --color-satfat: var(--satfat);
+  --color-sodium: var(--sodium);
   --color-success: var(--success);
 
   --color-chart-1: var(--chart-1);

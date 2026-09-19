@@ -2,9 +2,14 @@ import { Link } from 'react-router-dom'
 import { Loader2, TriangleAlert } from 'lucide-react'
 import type { ReactNode } from 'react'
 
-import type { Food, Nutrients, TargetProgress, VerificationStatus } from '@/api/types'
+import type { Food, Nutrient, Nutrients, TargetProgress, VerificationStatus } from '@/api/types'
+import { useAuth } from '@/lib/auth'
 import { kcal, round } from '@/lib/format'
+import { nutrientValue, orderNutrients } from '@/lib/nutrients'
 import { cn } from '@/lib/utils'
+
+/** Mirrors the server's default, for the moment before the profile arrives. */
+const DEFAULT_SHOWN: Nutrient[] = ['calories_kcal', 'protein_g', 'carbs_g', 'fat_g']
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
 import { Progress } from '@/components/ui/progress'
@@ -34,8 +39,15 @@ export function Empty({ children }: { children: ReactNode }) {
 }
 
 /**
- * The macro readout. One component everywhere a nutrient total appears, which
- * is what makes a recipe, a diary entry and a whole day read alike.
+ * The nutrient readout. One component everywhere a total appears, which is what
+ * makes a recipe, a diary entry and a whole day read alike.
+ *
+ * Which nutrients it shows comes from the signed-in account rather than being
+ * fixed at four. Someone tracking sodium for blood pressure was previously
+ * looking at a number the app stored, computed and never displayed. Calories
+ * keep the emphasis when present, because that is the figure most people are
+ * budgeting; the rest follow in the canonical order, coloured to match their
+ * bars elsewhere.
  */
 export function MacroRow({
   n,
@@ -46,6 +58,13 @@ export function MacroRow({
   compact?: boolean
   className?: string
 }) {
+  const { user } = useAuth()
+  // Falls back to the old fixed four while the profile is still loading, so
+  // the row never flickers from empty to populated on every page.
+  const chosen = orderNutrients(user?.shown_nutrients ?? DEFAULT_SHOWN)
+
+  if (chosen.length === 0) return null
+
   return (
     <div
       className={cn(
@@ -54,12 +73,23 @@ export function MacroRow({
         className,
       )}
     >
-      <span className={cn('text-foreground font-semibold', compact ? 'text-sm' : 'text-base')}>
-        {kcal(n.calories_kcal)}
-      </span>
-      <span className="text-protein">P {round(n.protein_g)}g</span>
-      <span className="text-carbs">C {round(n.carbs_g)}g</span>
-      <span className="text-fat">F {round(n.fat_g)}g</span>
+      {chosen.map((meta) =>
+        meta.key === 'calories_kcal' ? (
+          <span
+            key={meta.key}
+            className={cn('text-foreground font-semibold', compact ? 'text-sm' : 'text-base')}
+          >
+            {kcal(n.calories_kcal)}
+          </span>
+        ) : (
+          // The colour is an accent beside the text, never the only thing
+          // carrying identity -- the short label is always there.
+          <span key={meta.key} style={{ color: meta.color }}>
+            {meta.short} {round(nutrientValue(n, meta.key))}
+            {meta.unit === 'kcal' ? '' : meta.unit}
+          </span>
+        ),
+      )}
     </div>
   )
 }
