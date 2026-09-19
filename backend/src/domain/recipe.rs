@@ -102,6 +102,9 @@ pub struct RecipeSummary {
     /// How many ingredients, counted through any nesting, carry no nutrition.
     /// The macros here are complete only when this is zero.
     pub untracked_count: i64,
+    /// The first photo uploaded, for the card. Fetch it with the bearer
+    /// token like any photo; it is visible to whoever can see the recipe.
+    pub cover_photo_url: Option<String>,
     pub per_serving: Nutrients,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,

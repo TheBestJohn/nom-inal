@@ -112,7 +112,9 @@ pub async fn status(
             (SELECT max(recorded_on) FROM weight_entries WHERE user_id = $1),
             (SELECT max(logged_on)   FROM diary_entries  WHERE user_id = $1),
             (SELECT max(w.recorded_on)
-               FROM weigh_in_photos p
+               FROM photos p
+               -- The join is the filter: a recipe photo has no weigh-in and
+               -- must not count as a progress photo.
                JOIN weight_entries w ON w.id = p.weight_entry_id
               WHERE p.user_id = $1)",
     )

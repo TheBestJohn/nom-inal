@@ -62,6 +62,7 @@ pub fn api_router() -> Router<AppState> {
         .nest("/reminders", reminders::router())
         .nest("/foods", foods::router())
         .nest("/recipes", recipes::router())
+        .nest("/recipes", photos::recipe_photo_router())
         .nest("/targets", targets::router())
         .nest("/search", search::router())
         .nest("/diary", diary::router())

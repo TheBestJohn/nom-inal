@@ -267,7 +267,7 @@ pub async fn stats(
             (SELECT count(*) FROM recipes WHERE is_public) AS public_recipes,
             (SELECT count(*) FROM diary_entries) AS diary_entries,
             (SELECT count(*) FROM weight_entries) AS weigh_ins,
-            (SELECT count(*) FROM weigh_in_photos) AS photos,
+            (SELECT count(*) FROM photos) AS photos,
             (SELECT count(*) FROM api_keys
               WHERE revoked_at IS NULL AND (expires_at IS NULL OR expires_at > now())
             ) AS active_api_keys,

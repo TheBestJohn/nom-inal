@@ -22,7 +22,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { Empty, ErrorNote, Spinner } from '@/components/shared'
-import WeighInPhotos from '@/components/WeighInPhotos'
+import PhotoStrip from '@/components/PhotoStrip'
 import ReminderBanner from '@/components/ReminderBanner'
 
 const RANGES = [
@@ -282,7 +282,15 @@ export default function WeightPage() {
                     <X />
                   </Button>
                 </div>
-                <WeighInPhotos weightEntryId={entry.id} />
+                <PhotoStrip
+                  queryKey={['photos', 'weight', entry.id]}
+                  list={() => api.listPhotos(entry.id)}
+                  upload={(file) => api.uploadPhoto(entry.id, file)}
+                  canEdit
+                  label="Progress photo"
+                  // A new photo can clear the progress-photo reminder.
+                  onChange={() => queryClient.invalidateQueries({ queryKey: ['reminders'] })}
+                />
               </li>
             ))}
           </ul>

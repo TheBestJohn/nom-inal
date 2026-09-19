@@ -25,7 +25,7 @@ Rust (Axum) API + Postgres + React SPA, all behind one `docker compose up`.
 | **Instant search** | Streams results over SSE as you type, tier by tier, and tolerates typos — "chikn brest" finds chicken breast |
 | **Recipe sharing** | Private by default; mark one public and everyone can read and log it, while only you can change it. Unlike foods, a recipe is yours |
 | **Barcode lookup** | Type or scan a UPC/EAN and import the product in one click |
-| **Progress photos** | Attach photos to a weigh-in. Downscaled and re-encoded on upload, which strips EXIF — phone photos carry GPS |
+| **Photos** | Attach photos to a weigh-in (private) or a recipe (shared with the recipe). Downscaled and re-encoded on upload, which strips EXIF — phone photos carry GPS |
 | **Reminders** | "It's been three weeks since your last weigh-in", at a cadence you set |
 | **Choose what you see** | Every food stores eight nutrients; pick which reach the screen, and which get a chart on the home page. Kept on your account, so it follows you between devices |
 | **Dark mode** | Follows your OS by default, with a toggle that overrides it. Applied before first paint, so there is no flash of the wrong theme |

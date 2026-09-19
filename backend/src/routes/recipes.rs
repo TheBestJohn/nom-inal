@@ -9,6 +9,7 @@ use validator::Validate;
 
 use crate::auth::CurrentUser;
 use crate::domain::nutrients::Nutrients;
+use crate::domain::photo::photo_url;
 use crate::domain::recipe::{
     Recipe, RecipeItem, RecipeItemRow, RecipeRow, RecipeSummary, UpsertRecipeRequest,
 };
@@ -77,12 +78,17 @@ pub async fn list(
         saturated_fat_g: f64,
         sodium_mg: f64,
         untracked_count: i64,
+        cover_photo_id: Option<Uuid>,
     }
 
     let rows: Vec<Row> = sqlx::query_as(
         r#"
         SELECT r.id, r.user_id, r.name, r.description, r.servings, r.is_public,
                u.display_name AS author, r.created_at, r.updated_at,
+               -- The first photo uploaded is the cover. No ordering column to
+               -- get wrong, and the first one is usually the finished dish.
+               (SELECT p.id FROM photos p WHERE p.recipe_id = r.id
+                 ORDER BY p.created_at ASC LIMIT 1) AS cover_photo_id,
                COALESCE(c.item_count, 0)      AS item_count,
                COALESCE(t.weight_g, 0)        AS total_weight_g,
                COALESCE(t.calories_kcal, 0)   AS calories_kcal,
@@ -144,6 +150,7 @@ pub async fn list(
                 total_weight_g: round2(r.total_weight_g),
                 item_count: r.item_count,
                 untracked_count: r.untracked_count,
+                cover_photo_url: r.cover_photo_id.map(photo_url),
                 per_serving: total.scaled(1.0 / r.servings).rounded(),
                 created_at: r.created_at,
                 updated_at: r.updated_at,
@@ -287,10 +294,16 @@ pub async fn delete(
         )));
     }
 
+    // The photo rows go in the same transaction as the recipe, and their files
+    // only after it commits: the delete below can still be refused by the
+    // diary's foreign key, and a refused delete must not have cost the photos.
+    let mut tx = state.db.begin().await?;
+    let photo_paths = super::photos::delete_for_recipe(&mut tx, user.id, id).await?;
+
     let result = sqlx::query("DELETE FROM recipes WHERE id = $1 AND user_id = $2")
         .bind(id)
         .bind(user.id)
-        .execute(&state.db)
+        .execute(&mut *tx)
         .await
         .map_err(|e| match e {
             sqlx::Error::Database(ref db) if db.is_foreign_key_violation() => {
@@ -302,6 +315,8 @@ pub async fn delete(
     if result.rows_affected() == 0 {
         return Err(ApiError::NotFound("recipe"));
     }
+    tx.commit().await?;
+    super::photos::remove_files(&state, photo_paths).await;
     Ok(StatusCode::NO_CONTENT)
 }
 

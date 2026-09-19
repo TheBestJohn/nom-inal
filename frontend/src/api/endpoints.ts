@@ -95,6 +95,15 @@ export interface FoodInput {
   edit_summary?: string | null
 }
 
+function uploadPhotoTo(path: string, file: File, caption?: string) {
+  const form = new FormData()
+  form.append('file', file)
+  if (caption) form.append('caption', caption)
+  // No Content-Type header: the browser has to set it itself so the
+  // multipart boundary matches the body it generates.
+  return request<Photo>(path, { method: 'POST', form })
+}
+
 export const api = {
   health: () => request<Health>('/health'),
 
@@ -116,14 +125,11 @@ export const api = {
 
   listPhotos: (weightEntryId: string) =>
     request<Photo[]>(`/weights/${weightEntryId}/photos`),
-  uploadPhoto: (weightEntryId: string, file: File, caption?: string) => {
-    const form = new FormData()
-    form.append('file', file)
-    if (caption) form.append('caption', caption)
-    // No Content-Type header: the browser has to set it itself so the
-    // multipart boundary matches the body it generates.
-    return request<Photo>(`/weights/${weightEntryId}/photos`, { method: 'POST', form })
-  },
+  uploadPhoto: (weightEntryId: string, file: File, caption?: string) =>
+    uploadPhotoTo(`/weights/${weightEntryId}/photos`, file, caption),
+  listRecipePhotos: (recipeId: string) => request<Photo[]>(`/recipes/${recipeId}/photos`),
+  uploadRecipePhoto: (recipeId: string, file: File, caption?: string) =>
+    uploadPhotoTo(`/recipes/${recipeId}/photos`, file, caption),
   deletePhoto: (id: string) => request<void>(`/photos/${id}`, { method: 'DELETE' }),
 
   listReminders: () => request<Reminder[]>('/reminders'),

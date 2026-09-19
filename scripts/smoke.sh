@@ -453,6 +453,41 @@ status "a non-image is rejected" 400 -X POST "$BASE/weights/$PHOTO_ENTRY/photos"
 
 status "deleting the weigh-in succeeds"   204 -X DELETE "$BASE/weights/$PHOTO_ENTRY" -H "$AUTH"
 status "and takes its photos with it"     404 "$BASE/photos/$PHOTO_ID" -H "$AUTH"
+
+echo "== recipe photos"
+# Same storage and the same serving route as progress photos; the difference
+# is who may look. A weigh-in photo is its owner's alone. A recipe photo goes
+# with the recipe, so sharing the recipe shares its photos, and un-sharing it
+# takes them back.
+PREC=$(curl -fsS -X POST "$BASE/recipes" -H "$AUTH" -H 'content-type: application/json' -d "{
+  \"name\":\"Photographed\",\"servings\":1,\"items\":[{\"food_id\":\"$OATS\",\"quantity_g\":50}]}" | j "['id']")
+RUPLOADED=$(curl -fsS -X POST "$BASE/recipes/$PREC/photos" -H "$AUTH" -F "file=@$PHOTO" -F "caption=Plated")
+RPHOTO=$(echo "$RUPLOADED" | j "['id']")
+expect "photo attaches to the recipe"      "$(echo "$RUPLOADED" | j "['recipe_id']")"       "$PREC"
+expect "and to nothing else"               "$(echo "$RUPLOADED" | j "['weight_entry_id']")" "None"
+expect "the owner lists it"                "$(curl -fsS "$BASE/recipes/$PREC/photos" -H "$AUTH" | j "[0]['id']")" "$RPHOTO"
+expect "the list card carries it as cover" "$(curl -fsS "$BASE/recipes?q=Photographed" -H "$AUTH" | j "[0]['cover_photo_url']")" "/api/v1/photos/$RPHOTO"
+
+status "private: another account cannot list"  404 "$BASE/recipes/$PREC/photos" -H "$OAUTH"
+status "private: nor read the bytes"           404 "$BASE/photos/$RPHOTO" -H "$OAUTH"
+status "nor attach one of their own"           404 -X POST "$BASE/recipes/$PREC/photos" -H "$OAUTH" -F "file=@$PHOTO"
+
+curl -fsS -X PUT "$BASE/recipes/$PREC" -H "$AUTH" -H 'content-type: application/json' -d "{
+  \"name\":\"Photographed\",\"servings\":1,\"is_public\":true,\"items\":[{\"food_id\":\"$OATS\",\"quantity_g\":50}]}" >/dev/null
+status "shared: another account can list"      200 "$BASE/recipes/$PREC/photos" -H "$OAUTH"
+status "shared: and read the bytes"            200 "$BASE/photos/$RPHOTO" -H "$OAUTH"
+status "but still not add to it"               404 -X POST "$BASE/recipes/$PREC/photos" -H "$OAUTH" -F "file=@$PHOTO"
+status "nor delete what is there"              404 -X DELETE "$BASE/photos/$RPHOTO" -H "$OAUTH"
+status "nor retitle it"                        404 -X PATCH "$BASE/photos/$RPHOTO/caption" -H "$OAUTH" -H 'content-type: application/json' -d '{"caption":"mine now"}'
+
+# A recipe that is logged cannot be deleted; its photos must survive the refusal.
+PLOG=$(curl -fsS -X POST "$BASE/diary" -H "$AUTH" -H 'content-type: application/json' \
+  -d "{\"logged_on\":\"2026-05-06\",\"meal\":\"lunch\",\"recipe_id\":\"$PREC\",\"recipe_servings\":1}" | j "['id']")
+status "a logged recipe cannot be deleted"     400 -X DELETE "$BASE/recipes/$PREC" -H "$AUTH"
+status "and the refusal cost it no photos"     200 "$BASE/photos/$RPHOTO" -H "$AUTH"
+curl -fsS -X DELETE "$BASE/diary/$PLOG" -H "$AUTH" >/dev/null
+status "deleting the recipe succeeds"          204 -X DELETE "$BASE/recipes/$PREC" -H "$AUTH"
+status "and takes its photos with it"          404 "$BASE/photos/$RPHOTO" -H "$AUTH"
 rm -f "$PHOTO" "$NOTAPHOTO"
 
 echo "== reminders"

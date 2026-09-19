@@ -10,6 +10,7 @@ import { Button } from '@/components/ui/button'
 import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Empty, ErrorNote, MacroRow, Spinner } from '@/components/shared'
+import { useAuthedImage } from '@/components/PhotoStrip'
 
 type Scope = 'mine' | 'public'
 
@@ -98,18 +99,34 @@ export default function RecipesPage() {
                 </CardAction>
               )}
             </CardHeader>
-            <CardContent className="space-y-1">
-              {recipe.description && (
-                <p className="text-muted-foreground line-clamp-2 text-sm">{recipe.description}</p>
-              )}
-              <p className="text-muted-foreground text-xs">
-                Per serving · {kcal(recipe.per_serving.calories_kcal)}
-              </p>
-              <MacroRow n={recipe.per_serving} />
+            <CardContent className="flex gap-4">
+              {recipe.cover_photo_url && <Cover url={recipe.cover_photo_url} name={recipe.name} />}
+              <div className="min-w-0 flex-1 space-y-1">
+                {recipe.description && (
+                  <p className="text-muted-foreground line-clamp-2 text-sm">{recipe.description}</p>
+                )}
+                <p className="text-muted-foreground text-xs">
+                  Per serving · {kcal(recipe.per_serving.calories_kcal)}
+                </p>
+                <MacroRow n={recipe.per_serving} />
+              </div>
             </CardContent>
           </Card>
         ))}
       </div>
+    </div>
+  )
+}
+
+/**
+ * The card's cover: the recipe's first photo. Fetched with the token like
+ * every photo, since `<img src>` alone cannot pass one.
+ */
+function Cover({ url, name }: { url: string; name: string }) {
+  const { objectUrl } = useAuthedImage(url)
+  return (
+    <div className="bg-muted size-20 shrink-0 overflow-hidden rounded-md border">
+      {objectUrl && <img src={objectUrl} alt={`Photo of ${name}`} className="size-full object-cover" />}
     </div>
   )
 }

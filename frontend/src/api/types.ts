@@ -318,6 +318,8 @@ export interface RecipeSummary {
   item_count: number
   /** Ingredients, counted through nesting, that carry no nutrition. */
   untracked_count: number
+  /** The first photo uploaded, for the card. Needs the auth header like any photo. */
+  cover_photo_url: string | null
   per_serving: Nutrients
   created_at: string
   updated_at: string
@@ -394,7 +396,10 @@ export interface Health {
 
 export interface Photo {
   id: string
-  weight_entry_id: string
+  /** Set on a progress photo. Exactly one of this and `recipe_id` is set. */
+  weight_entry_id: string | null
+  /** Set on a recipe photo. */
+  recipe_id: string | null
   content_type: string
   byte_size: number
   width: number
