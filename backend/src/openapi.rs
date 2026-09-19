@@ -79,6 +79,7 @@ use utoipa::{Modify, OpenApi};
         crate::error::ErrorBody,
         crate::domain::nutrients::Nutrients,
         crate::domain::user::Profile,
+        crate::domain::user::ChartMode,
         crate::domain::user::RegisterRequest,
         crate::domain::user::LoginRequest,
         crate::domain::user::AuthResponse,

@@ -1,9 +1,11 @@
 import { Link } from 'react-router-dom'
-import { useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery } from '@tanstack/react-query'
 import {
   CartesianGrid,
+  Legend,
   Line,
   LineChart,
+  ReferenceLine,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -25,8 +27,9 @@ import {
 } from '@/components/ui/card'
 import { Separator } from '@/components/ui/separator'
 import { Empty, ErrorNote, MacroRow, Spinner, TargetList } from '@/components/shared'
-import { nutrientValue, orderNutrients } from '@/lib/nutrients'
-import type { DiarySummary, Nutrient } from '@/api/types'
+import { dashFor, nutrientValue, orderNutrients } from '@/lib/nutrients'
+import type { ChartMode, DiarySummary, Nutrient, NutritionTarget } from '@/api/types'
+import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import ReminderBanner from '@/components/ReminderBanner'
 
 /** Recharts takes colours as values, not classes, so they come from the theme
@@ -94,8 +97,90 @@ function NutrientChart({
   )
 }
 
+/**
+ * Every charted nutrient as a share of its own goal or budget, on one axis.
+ *
+ * This is the one honest way to put calories and fat on the same chart: they
+ * share no scale, but "how far through today's number am I" is the same
+ * question for both, so 100% means the same thing on every line.
+ *
+ * Direction still differs and the chart cannot flatten that — 120% of a protein
+ * goal is a good day and 120% of a calorie budget is not — so each series says
+ * which it is, and the line at 100% is labelled rather than left to be guessed.
+ */
+function PercentChart({
+  series,
+  summary,
+}: {
+  series: { nutrient: Nutrient; label: string; color: string; target: NutritionTarget }[]
+  summary?: DiarySummary
+}) {
+  const data = (summary?.days ?? []).map((d) => {
+    const row: Record<string, string | number> = { date: shortDate(d.date) }
+    for (const s of series) {
+      row[s.nutrient] = Math.round((nutrientValue(d.total, s.nutrient) / s.target.amount) * 100)
+    }
+    return row
+  })
+
+  return (
+    <ResponsiveContainer width="100%" height={260}>
+      {/* The right margin is for the target label, which sits outside the plot:
+          inside it, it lands on whichever series happens to be near 100%. */}
+      <LineChart data={data} margin={{ top: 8, right: 40, bottom: 0, left: -12 }}>
+        <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
+        <XAxis dataKey="date" stroke="var(--muted-foreground)" fontSize={12} tickMargin={8} />
+        <YAxis
+          stroke="var(--muted-foreground)"
+          fontSize={12}
+          width={52}
+          // 100% is the reference the whole chart is about, so it is always in
+          // frame: let recharts fit the data and a light day would put the
+          // target line off the top, which is exactly the fact being hidden.
+          domain={[0, (max: number) => Math.max(110, Math.ceil(max / 10) * 10)]}
+          tickFormatter={(v) => `${v}%`}
+        />
+        <Tooltip contentStyle={TOOLTIP_STYLE} formatter={(v, name) => [`${v}%`, name]} />
+        {/* The whole point of the axis: one line everything is measured against. */}
+        <ReferenceLine
+          y={100}
+          stroke="var(--muted-foreground)"
+          strokeDasharray="4 4"
+          label={{
+            value: 'target',
+            position: 'right',
+            fill: 'var(--muted-foreground)',
+            fontSize: 11,
+          }}
+        />
+        <Legend
+          verticalAlign="bottom"
+          height={36}
+          formatter={(value) => <span className="text-muted-foreground text-xs">{value}</span>}
+        />
+        {series.map((s, i) => (
+          <Line
+            key={s.nutrient}
+            type="monotone"
+            dataKey={s.nutrient}
+            // The legend entry is the identity; the colour is an accent and the
+            // dash pattern is what still separates the lines in greyscale or
+            // for a reader who cannot tell these hues apart.
+            name={`${s.label} (${s.target.kind})`}
+            stroke={s.color}
+            strokeDasharray={dashFor(i)}
+            strokeWidth={2}
+            dot={false}
+            activeDot={{ r: 4 }}
+          />
+        ))}
+      </LineChart>
+    </ResponsiveContainer>
+  )
+}
+
 export default function DashboardPage() {
-  const { user } = useAuth()
+  const { user, setUser } = useAuth()
   const to = today()
   const from = addDays(to, -29)
 
@@ -122,6 +207,31 @@ export default function DashboardPage() {
     .map((w) => ({ date: shortDate(w.recorded_on), kg: w.weight_kg }))
 
   const charted = orderNutrients(user?.chart_nutrients ?? (['calories_kcal'] as Nutrient[]))
+  const mode: ChartMode = user?.chart_mode ?? 'percent'
+
+  // Percent mode needs the numbers being measured against, and they are the
+  // same for every day in the window -- targets are a standing setting, not a
+  // per-day record -- so one fetch covers the whole chart.
+  const targets = useQuery({
+    queryKey: ['targets'],
+    queryFn: () => api.listTargets(),
+    enabled: mode === 'percent',
+  })
+
+  const setMode = useMutation({
+    mutationFn: (chart_mode: ChartMode) => api.updateProfile({ chart_mode }),
+    onSuccess: (profile) => setUser(profile),
+  })
+
+  // A nutrient with no goal or budget has nothing to be a percentage of. It is
+  // dropped rather than drawn at zero, and named below rather than silently
+  // missing -- a chart quietly short of a line you asked for is worse than one
+  // that says why.
+  const withTargets = charted.flatMap((meta) => {
+    const target = targets.data?.find((t) => t.nutrient === meta.key)
+    return target ? [{ nutrient: meta.key, label: meta.label, color: meta.color, target }] : []
+  })
+  const untargeted = charted.filter((meta) => !withTargets.some((s) => s.nutrient === meta.key))
 
   return (
     <div className="space-y-4">
@@ -227,47 +337,78 @@ export default function DashboardPage() {
         <CardHeader>
           <CardTitle>Last 30 days</CardTitle>
           <CardDescription>
-            One chart per nutrient you follow. Change which in{' '}
+            {mode === 'percent'
+              ? 'Each nutrient as a share of its own goal or budget, so they share one axis.'
+              : 'Real figures, one chart each — they have no shared scale.'}{' '}
+            Change which nutrients in{' '}
             <Link to="/settings" className="text-primary underline underline-offset-4">
               Settings
             </Link>
             .
           </CardDescription>
+          <CardAction>
+            <ToggleGroup
+              type="single"
+              size="sm"
+              value={mode}
+              onValueChange={(v) => v && setMode.mutate(v as ChartMode)}
+              aria-label="Chart style"
+            >
+              <ToggleGroupItem value="percent">% of target</ToggleGroupItem>
+              <ToggleGroupItem value="actual">Actual</ToggleGroupItem>
+            </ToggleGroup>
+          </CardAction>
         </CardHeader>
         <CardContent className="space-y-3">
-          {summary.isLoading && <Spinner />}
+          {(summary.isLoading || (mode === 'percent' && targets.isLoading)) && <Spinner />}
           <ErrorNote error={summary.error} />
+          <ErrorNote error={targets.error} />
+          <ErrorNote error={setMode.error} />
+
           {charted.length === 0 ? (
             <Empty>No nutrients selected to chart.</Empty>
           ) : (summary.data?.days.length ?? 0) === 0 ? (
             <Empty>Nothing logged in this window yet.</Empty>
+          ) : mode === 'percent' && withTargets.length === 0 ? (
+            <Empty>
+              Nothing here has a goal or budget yet —{' '}
+              <Link to="/settings" className="text-primary underline underline-offset-4">
+                set one
+              </Link>{' '}
+              to see progress against it, or switch to actual values.
+            </Empty>
           ) : (
             <>
-              {/* Small multiples rather than several lines on one pair of axes.
-                  Calories run to a couple of thousand and fat to about seventy,
-                  so a shared y-axis would flatten every macro onto the floor and
-                  a second axis would invite comparing two scales that have
-                  nothing to do with each other. Each nutrient gets its own axis
-                  and its own unit; the heading carries the identity, so no
-                  legend is needed and colour is never doing the work alone. */}
-              <div
-                className={cn(
-                  'grid gap-4',
-                  charted.length > 1 && 'sm:grid-cols-2',
-                )}
-              >
-                {charted.map((meta) => (
-                  <NutrientChart
-                    key={meta.key}
-                    nutrient={meta.key}
-                    label={meta.label}
-                    unit={meta.unit}
-                    color={meta.color}
-                    summary={summary.data}
-                    sole={charted.length === 1}
-                  />
-                ))}
-              </div>
+              {mode === 'percent' ? (
+                <PercentChart series={withTargets} summary={summary.data} />
+              ) : (
+                /* Small multiples rather than several lines on one pair of
+                   axes. Calories run to a couple of thousand and fat to about
+                   seventy, so a shared y-axis would flatten every macro onto
+                   the floor. Each nutrient gets its own axis and its own unit;
+                   the heading carries the identity, so no legend is needed and
+                   colour is never doing the work alone. */
+                <div className={cn('grid gap-4', charted.length > 1 && 'sm:grid-cols-2')}>
+                  {charted.map((meta) => (
+                    <NutrientChart
+                      key={meta.key}
+                      nutrient={meta.key}
+                      label={meta.label}
+                      unit={meta.unit}
+                      color={meta.color}
+                      summary={summary.data}
+                      sole={charted.length === 1}
+                    />
+                  ))}
+                </div>
+              )}
+
+              {mode === 'percent' && untargeted.length > 0 && (
+                <p className="text-muted-foreground text-xs">
+                  Not shown: {untargeted.map((m) => m.label).join(', ')} — no goal or budget set.
+                </p>
+              )}
+
               <Separator />
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <span className="text-muted-foreground text-xs">

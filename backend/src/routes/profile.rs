@@ -60,6 +60,7 @@ pub async fn update_profile(
             -- the COALESCE that means the field was omitted entirely.
             shown_nutrients = COALESCE($9, shown_nutrients),
             chart_nutrients = COALESCE($10, chart_nutrients),
+            chart_mode = COALESCE($11, chart_mode),
             updated_at = now()
          WHERE id = $1
          RETURNING {USER_COLUMNS}"
@@ -82,6 +83,7 @@ pub async fn update_profile(
             .as_deref()
             .map(UpdateProfileRequest::nutrient_keys),
     )
+    .bind(body.chart_mode.map(|m| m.as_str()))
     .fetch_optional(&state.db)
     .await?
     .ok_or(ApiError::NotFound("user"))?;

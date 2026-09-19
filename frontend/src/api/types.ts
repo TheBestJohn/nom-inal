@@ -23,8 +23,13 @@ export interface Profile {
   is_admin: boolean
   /** Nutrients the macro readouts should show. Always resolved by the server. */
   shown_nutrients: Nutrient[]
-  /** Nutrients the home page plots, one small chart each. */
+  /** Nutrients the home page plots. */
   chart_nutrients: Nutrient[]
+  /**
+   * `percent` indexes each series to its own goal or budget and draws them on
+   * one axis; `actual` keeps the real figures and gives each its own chart.
+   */
+  chart_mode: ChartMode
   created_at: string
 }
 
@@ -130,6 +135,9 @@ export interface Food {
   created_at: string
   updated_at: string
 }
+
+/** How the home page plots the nutrients you follow. */
+export type ChartMode = 'percent' | 'actual'
 
 /** Which quantity a set of nutrient figures describes. */
 export type NutrientBasis = 'per_100g' | 'per_serving'

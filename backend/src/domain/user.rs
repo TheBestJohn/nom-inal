@@ -11,7 +11,7 @@ use super::target::{Nutrient, DEFAULT_CHART_NUTRIENTS, DEFAULT_SHOWN_NUTRIENTS};
 pub const USER_COLUMNS: &str = r#"
     id, email, password_hash, display_name, sex, birth_date, height_cm,
     activity_level, goal, target_weight_kg, is_admin, disabled_at,
-    shown_nutrients, chart_nutrients, created_at
+    shown_nutrients, chart_nutrients, chart_mode, created_at
 "#;
 
 #[derive(Debug, FromRow)]
@@ -31,7 +31,39 @@ pub struct UserRow {
     /// NULL until the account expresses a preference; see the migration.
     pub shown_nutrients: Option<Vec<String>>,
     pub chart_nutrients: Option<Vec<String>>,
+    pub chart_mode: Option<String>,
     pub created_at: DateTime<Utc>,
+}
+
+/// How the home page draws the nutrients you follow.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum ChartMode {
+    /// Each series as a share of its own goal or budget, all on one axis.
+    /// 100% means the same thing on every line, which is what makes them
+    /// comparable at all.
+    #[default]
+    Percent,
+    /// The real figures, one small chart per nutrient — they have no shared
+    /// scale, so they do not share an axis.
+    Actual,
+}
+
+impl ChartMode {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Percent => "percent",
+            Self::Actual => "actual",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "percent" => Some(Self::Percent),
+            "actual" => Some(Self::Actual),
+            _ => None,
+        }
+    }
 }
 
 /// Turn a stored list into nutrients, falling back to the default when nobody
@@ -67,8 +99,9 @@ pub struct Profile {
     /// Which nutrients the macro readouts should show. Always resolved — a
     /// client never has to know what the default is.
     pub shown_nutrients: Vec<Nutrient>,
-    /// Which nutrients the home page plots, one small chart each.
+    /// Which nutrients the home page plots.
     pub chart_nutrients: Vec<Nutrient>,
+    pub chart_mode: ChartMode,
     pub created_at: DateTime<Utc>,
 }
 
@@ -87,6 +120,11 @@ impl From<UserRow> for Profile {
             is_admin: u.is_admin,
             shown_nutrients: resolve(u.shown_nutrients.as_ref(), &DEFAULT_SHOWN_NUTRIENTS),
             chart_nutrients: resolve(u.chart_nutrients.as_ref(), &DEFAULT_CHART_NUTRIENTS),
+            chart_mode: u
+                .chart_mode
+                .as_deref()
+                .and_then(ChartMode::parse)
+                .unwrap_or_default(),
             created_at: u.created_at,
         }
     }
@@ -133,6 +171,7 @@ pub struct UpdateProfileRequest {
     /// nothing" — and is why this cannot simply treat empty as unset.
     pub shown_nutrients: Option<Vec<Nutrient>>,
     pub chart_nutrients: Option<Vec<Nutrient>>,
+    pub chart_mode: Option<ChartMode>,
 }
 
 impl UpdateProfileRequest {

@@ -99,8 +99,9 @@ export default function DisplayEditor() {
 
         <p className="text-muted-foreground flex items-center gap-1.5 text-xs">
           {save.isSuccess && !save.isPending && <Check className="size-3.5" />}
-          Each charted nutrient gets its own small chart with its own scale — calories and fat on
-          one pair of axes would flatten the fat line onto the floor.
+          The home page draws these as a share of each one&rsquo;s goal or budget, which is what
+          lets kcal and grams share an axis. Switch it to actual figures there and each nutrient
+          gets its own small chart instead, because the raw numbers share no scale.
         </p>
       </CardContent>
     </Card>

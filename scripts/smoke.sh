@@ -70,6 +70,17 @@ expect "readouts default to calories and macros" \
   "['calories_kcal', 'protein_g', 'carbs_g', 'fat_g']"
 expect "and the home chart to calories alone" \
   "$(curl -fsS "$BASE/profile" -H "$AUTH" | j "['chart_nutrients']")" "['calories_kcal']"
+# Percent of target is the default: it is the one basis on which nutrients with
+# no shared scale can honestly share an axis.
+expect "the chart indexes to targets by default" \
+  "$(curl -fsS "$BASE/profile" -H "$AUTH" | j "['chart_mode']")" "percent"
+expect "and the mode can be changed" \
+  "$(curl -fsS -X PATCH "$BASE/profile" -H "$AUTH" -H 'content-type: application/json' \
+      -d '{"chart_mode":"actual"}' | j "['chart_mode']")" "actual"
+expect "it survives a reload" "$(curl -fsS "$BASE/profile" -H "$AUTH" | j "['chart_mode']")" "actual"
+status "an unknown mode is refused" 400 -X PATCH "$BASE/profile" -H "$AUTH" -H 'content-type: application/json' \
+  -d '{"chart_mode":"pie"}'
+curl -fsS -X PATCH "$BASE/profile" -H "$AUTH" -H 'content-type: application/json' -d '{"chart_mode":"percent"}' >/dev/null
 
 PREFS=$(curl -fsS -X PATCH "$BASE/profile" -H "$AUTH" -H 'content-type: application/json' \
   -d '{"shown_nutrients":["sodium_mg","calories_kcal","fiber_g"],"chart_nutrients":["protein_g","calories_kcal"]}')

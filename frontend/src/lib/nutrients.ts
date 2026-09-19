@@ -110,3 +110,26 @@ export const orderNutrients = (chosen: Nutrient[]): NutrientMeta[] =>
 
 /** Read one nutrient out of a totals object by key. */
 export const nutrientValue = (n: Nutrients, key: Nutrient): number => n[key] ?? 0
+
+/**
+ * A dash pattern per series, for the combined percent chart.
+ *
+ * Colour alone cannot carry seven series: run the palette validator over every
+ * pair and protein and fat come out at ΔE 0.2 under deuteranopia — one line to
+ * a red-green colourblind reader. Hueing around it does not work at this many
+ * series, which is why the guidance says to cut, facet, or add a second
+ * encoding. This is the second encoding, and it survives greyscale printing
+ * and forced-colors mode too.
+ */
+export const DASH_PATTERNS = [
+  undefined, // solid — the first series reads as the primary one
+  '6 3',
+  '2 3',
+  '10 4',
+  '6 3 2 3',
+  '1 4',
+  '12 3 2 3',
+  '4 2 1 2',
+] as const
+
+export const dashFor = (index: number) => DASH_PATTERNS[index % DASH_PATTERNS.length]
