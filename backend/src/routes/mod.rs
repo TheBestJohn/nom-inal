@@ -24,9 +24,23 @@ use crate::state::AppState;
 pub struct Health {
     pub status: &'static str,
     pub version: &'static str,
+    /// The commit this binary was built from, when the build said. Null for a
+    /// source build that did not: an unknown provenance is reported as
+    /// unknown rather than guessed from a working tree.
+    pub git_sha: Option<&'static str>,
+    /// When the binary was built, RFC 3339 UTC, on the same terms.
+    pub built_at: Option<&'static str>,
     pub database: &'static str,
     /// Whether a USDA FoodData Central API key is configured.
     pub usda_configured: bool,
+}
+
+/// Build provenance is read at compile time from `NOM_GIT_SHA` and
+/// `NOM_BUILT_AT`, which the Dockerfile sets from build args and the release
+/// workflow supplies. An empty value counts as unset so a Dockerfile `ENV`
+/// with no arg behind it does not report a build from commit "".
+fn build_stamp(value: Option<&'static str>) -> Option<&'static str> {
+    value.filter(|v| !v.trim().is_empty())
 }
 
 #[utoipa::path(
@@ -44,6 +58,8 @@ pub async fn health(State(state): State<AppState>) -> ApiResult<Json<Health>> {
     Ok(Json(Health {
         status: "ok",
         version: env!("CARGO_PKG_VERSION"),
+        git_sha: build_stamp(option_env!("NOM_GIT_SHA")),
+        built_at: build_stamp(option_env!("NOM_BUILT_AT")),
         database: "ok",
         usda_configured: state.usda.is_configured(),
     }))

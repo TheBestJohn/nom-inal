@@ -67,6 +67,23 @@ jobs:
             org.opencontainers.image.description=Self-hosted nutrition tracking — weight, calories, macros, recipes
             org.opencontainers.image.licenses=MIT
 
+      # The API bakes the commit and build time into /api/v1/health, so an
+      # instance can say exactly what it is running. Computed here rather than
+      # in the Dockerfile, which has no git and should not need one. Only the
+      # API consumes them; the web image is static files and gets nothing,
+      # which also keeps buildx from warning about unconsumed args.
+      - name: Stamp the build
+        id: stamp
+        run: |
+          if [ "${{ matrix.image }}" = api ]; then
+            {
+              echo 'args<<EOF'
+              echo "GIT_SHA=${{ github.sha }}"
+              echo "BUILT_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+              echo 'EOF'
+            } >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Build and push
         uses: docker/build-push-action@v7
         with:
@@ -78,6 +95,7 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          build-args: ${{ steps.stamp.outputs.args }}
           cache-from: type=gha,scope=${{ matrix.image }}
           cache-to: type=gha,mode=max,scope=${{ matrix.image }}
 

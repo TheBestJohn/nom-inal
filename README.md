@@ -464,6 +464,12 @@ git push origin v0.1.0
 Every push to `main` publishes `edge` as well, so the pipeline is exercised
 continuously rather than only when a release is cut.
 
+The workflow passes the commit and a UTC timestamp into the API image as build
+args, and the binary reports them from `/api/v1/health` as `git_sha` and
+`built_at` (and Settings shows them), so an instance can say what it is running
+even on `edge` or `latest`. A source build that was not given them reports
+`null` rather than guessing.
+
 The images cross-compile rather than build under emulation. A Rust release
 build through QEMU takes the better part of an hour and sometimes runs out of
 memory on a hosted runner; compiling natively for a foreign target costs about

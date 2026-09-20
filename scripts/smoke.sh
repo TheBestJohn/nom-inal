@@ -32,7 +32,15 @@ status() { # status <label> <wanted-code> <curl args...>
 }
 
 echo "== health"
-expect "database reachable" "$(curl -fsS "$BASE/health" | j "['database']")" "ok"
+HEALTH=$(curl -fsS "$BASE/health")
+expect "database reachable" "$(echo "$HEALTH" | j "['database']")" "ok"
+# Build provenance is stamped by the image build; a source build reports null
+# rather than a guess, so only the keys are asserted here.
+expect "the build says which commit it is, or admits it does not" \
+  "$(echo "$HEALTH" | j " and 'git_sha' in d and 'built_at' in d")" "True"
+expect "a stamp is either absent or a string" \
+  "$(echo "$HEALTH" | j " and all(v is None or isinstance(v, str) for v in (d['git_sha'], d['built_at']))")" "True"
+
 
 echo "== auth"
 TOKEN=$(curl -fsS -X POST "$BASE/auth/register" -H 'content-type: application/json' \

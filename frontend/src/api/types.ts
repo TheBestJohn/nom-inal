@@ -390,6 +390,10 @@ export interface DiarySummary {
 export interface Health {
   status: string
   version: string
+  /** The commit the image was built from. Null for a source build nobody stamped. */
+  git_sha: string | null
+  /** RFC 3339 UTC, on the same terms. */
+  built_at: string | null
   database: string
   usda_configured: boolean
 }
