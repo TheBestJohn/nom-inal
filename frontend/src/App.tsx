@@ -96,7 +96,11 @@ export default function App() {
   return (
     <div className="flex min-h-dvh flex-col">
       <header className="bg-background/85 sticky top-0 z-30 border-b backdrop-blur-sm print:hidden">
-        <div className="mx-auto flex h-14 w-full max-w-5xl items-center justify-between gap-3 px-4">
+        {/* The viewport is `viewport-fit=cover`, so on a notched phone held
+            sideways the first and last 40-odd pixels of every row are under
+            the bezel. Each horizontal edge takes the larger of its usual
+            gutter and whatever the device says it needs. */}
+        <div className="mx-auto flex h-14 w-full max-w-5xl items-center justify-between gap-3 pl-[max(1rem,env(safe-area-inset-left))] pr-[max(1rem,env(safe-area-inset-right))]">
           <div className="flex items-center gap-2 font-semibold tracking-tight">
             <span aria-hidden="true">🥗</span>
             <span>nom-inal</span>
@@ -115,7 +119,7 @@ export default function App() {
 
         <nav
           aria-label="Main"
-          className="mx-auto flex w-full max-w-5xl gap-1 overflow-x-auto px-3 pb-2"
+          className="mx-auto flex w-full max-w-5xl gap-1 overflow-x-auto pb-2 pl-[max(0.75rem,env(safe-area-inset-left))] pr-[max(0.75rem,env(safe-area-inset-right))]"
         >
           {(user.is_admin ? [...NAV, ADMIN_NAV] : NAV).map(({ to, label, icon: Icon, end }) => (
             <NavLink
@@ -139,7 +143,7 @@ export default function App() {
         </nav>
       </header>
 
-      <main className="mx-auto w-full max-w-5xl flex-1 px-4 py-6 pb-16">
+      <main className="mx-auto w-full max-w-5xl flex-1 py-6 pb-[max(4rem,env(safe-area-inset-bottom))] pl-[max(1rem,env(safe-area-inset-left))] pr-[max(1rem,env(safe-area-inset-right))]">
         {welcome && <WelcomeGate />}
         <Routes>
           <Route path="/" element={<DashboardPage />} />

@@ -8,7 +8,46 @@ section and know what to update.
 
 ## Unreleased
 
-_Nothing yet._
+### Recipes on a phone
+
+- The ingredient list reads as a recipe card at 360 pixels wide. The amount
+  and the ingredient share the first line, in that order — amount then
+  ingredient, the way a cook scans one — and the energy sits underneath.
+  A long name with a brand after it used to wrap four words deep inside a
+  fixed column barely wider than "240 g".
+- The recipe page's controls are one row on a phone: Edit and, when the
+  recipe is shared, Copy link, with Markdown, JSON, Print and Back behind a
+  menu beside them. They were three stacked rows that pushed the recipe
+  itself below the fold. Nothing moves on a wide screen — all six are still
+  there in the open.
+- The recipe form is usable on the device people cook with. Every ingredient
+  row now says which ingredient it is: the name takes the first line with the
+  button that removes it, the amount, its unit and the running calories take
+  the second. At 360 pixels the old row gave the name no width at all, so
+  the list was four amount boxes and nothing else. The name and servings
+  share a line, and Save follows you down the page instead of waiting at the
+  bottom of a form several screens tall.
+- The dialogs — adding an ingredient, picking a food, reading a barcode — fit
+  the screen. Their content was laid out to its own width rather than the
+  dialog's, so the picker's Barcode tab and the right-hand end of every food
+  name hung off the edge of the phone.
+- Recipe cards in the list give the name the full width, and the per-serving
+  figures a full-width line beneath the photo, which is what it takes to show
+  all eight nutrients without a column two words wide.
+- Anything you tap is at least 44 pixels where the pointer is a finger, and
+  exactly the size it was where it is a mouse. A photo's delete button is
+  among them: it only appeared on hover, which on a phone means it did not
+  exist, so a photo attached to a recipe could not be removed from one.
+- Nothing important sits under a notch or a home indicator any more: the
+  header, the navigation and the page take the device's own insets as their
+  margins.
+- `scripts/mobile-layout.mjs` drives a browser over all of this at 390x844,
+  360x800 and 1280x900, in both themes, against a recipe built to be
+  awkward — a long name, a long brand, a sub-recipe, an ingredient that is
+  only words, a five-step method, a photo, every nutrient switched on — and
+  asserts that no page scrolls sideways, nothing overflows the card or dialog
+  it is in, no two parts of a row overlap and every control is big enough to
+  hit.
 
 ## v0.3.0 — 2026-09-20
 

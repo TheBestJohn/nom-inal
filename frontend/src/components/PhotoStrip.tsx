@@ -190,14 +190,22 @@ function Thumbnail({
         )}
       </button>
       {onRemove && (
+        // Revealed on hover is the same as not there at all on a phone, where
+        // there is no hover to give — so where the pointer is coarse it is
+        // simply always visible, and large enough to hit without being large
+        // enough to swallow the tap that opens the photo. A mouse still gets
+        // the quiet version that appears when you reach for it.
         <Button
           variant="destructive"
           size="icon-sm"
           aria-label="Delete photo"
           onClick={onRemove}
-          className="absolute -top-2 -right-2 size-6 opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100"
+          // Deliberately 36px rather than the 44 a touch control usually
+          // gets: the photo behind it is itself a button, and a target that
+          // size at its corner would start eating the taps meant to open it.
+          className="absolute -top-2 -right-2 size-9 rounded-full opacity-100 shadow-sm transition-opacity group-focus-within:opacity-100 pointer-coarse:size-9 pointer-fine:size-6 pointer-fine:opacity-0 pointer-fine:group-hover:opacity-100"
         >
-          <X className="size-3" />
+          <X className="size-4 pointer-fine:size-3" />
         </Button>
       )}
     </div>

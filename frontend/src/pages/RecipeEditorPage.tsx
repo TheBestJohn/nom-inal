@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { Fragment, useEffect, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
@@ -8,6 +8,7 @@ import {
   FileText,
   Globe,
   Link2,
+  MoreHorizontal,
   Pencil,
   Plus,
   Printer,
@@ -19,11 +20,19 @@ import type { RecipeInput } from '@/api/endpoints'
 import type { Food, Nutrients, Recipe, RecipeDraft, RecipeSummary } from '@/api/types'
 import { withNetCarbs } from '@/lib/nutrients'
 import { grams, kcal } from '@/lib/format'
+import { cn } from '@/lib/utils'
 import { ZERO, foodItem, recipeItem, textItem, type DraftItem } from '@/lib/recipeDraft'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Card, CardAction, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
@@ -141,6 +150,47 @@ function RecipeView({ recipe, onEdit }: { recipe: Recipe; onEdit: () => void }) 
       api.downloadRecipeExport(recipe.id, recipe.name, format),
   })
 
+  // Six controls is a comfortable row on a laptop and three stacked lines on
+  // a phone, which pushed the recipe itself below the fold. Editing and
+  // copying the link stay in the open because they are what people came for;
+  // the rest are named once, here, and rendered twice — as buttons where
+  // there is room and as a menu where there is not — so the two can never
+  // come to disagree about what the page can do.
+  const secondary = [
+    {
+      key: 'markdown',
+      short: 'Markdown',
+      label: 'Save as a Markdown recipe card',
+      icon: FileText,
+      variant: 'outline' as const,
+      run: () => download.mutate('markdown'),
+    },
+    {
+      key: 'json',
+      short: 'JSON',
+      label: 'Save as JSON, with foods named rather than numbered',
+      icon: FileJson,
+      variant: 'outline' as const,
+      run: () => download.mutate('json'),
+    },
+    {
+      key: 'print',
+      short: 'Print',
+      label: 'Print this recipe',
+      icon: Printer,
+      variant: 'ghost' as const,
+      run: () => window.print(),
+    },
+    {
+      key: 'back',
+      short: 'Back',
+      label: 'Back to recipes',
+      icon: ArrowLeft,
+      variant: 'ghost' as const,
+      run: () => navigate('/recipes'),
+    },
+  ]
+
   return (
     <RecipeReadout
       recipe={recipe}
@@ -152,30 +202,41 @@ function RecipeView({ recipe, onEdit }: { recipe: Recipe; onEdit: () => void }) 
             </Button>
           )}
           {recipe.is_public && <CopyLinkButton url={api.publicRecipeUrl(recipe.id)} />}
-          <Button
-            variant="outline"
-            size="sm"
-            disabled={download.isPending}
-            onClick={() => download.mutate('markdown')}
-            title="Save as a Markdown recipe card"
-          >
-            <FileText /> Markdown
-          </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            disabled={download.isPending}
-            onClick={() => download.mutate('json')}
-            title="Save as JSON, with foods named rather than numbered"
-          >
-            <FileJson /> JSON
-          </Button>
-          <Button variant="ghost" size="sm" onClick={() => window.print()}>
-            <Printer /> Print
-          </Button>
-          <Button variant="ghost" size="sm" onClick={() => navigate('/recipes')}>
-            <ArrowLeft /> Back
-          </Button>
+
+          <div className="hidden items-center gap-2 sm:flex">
+            {secondary.map(({ key, short, label, icon: Icon, variant, run }) => (
+              <Button
+                key={key}
+                variant={variant}
+                size="sm"
+                disabled={download.isPending}
+                onClick={run}
+                title={label}
+              >
+                <Icon /> {short}
+              </Button>
+            ))}
+          </div>
+
+          <div className="sm:hidden">
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="ghost" size="icon" aria-label="More recipe actions">
+                  <MoreHorizontal />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent>
+                {secondary.map(({ key, short, icon: Icon, run }) => (
+                  <Fragment key={key}>
+                    {key === 'back' && <DropdownMenuSeparator />}
+                    <DropdownMenuItem onSelect={run} disabled={download.isPending}>
+                      <Icon /> {key === 'back' ? 'Back to recipes' : short}
+                    </DropdownMenuItem>
+                  </Fragment>
+                ))}
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
         </>
       }
       note={
@@ -428,8 +489,11 @@ export default function RecipeEditorPage() {
         <CardHeader>
           <CardTitle>Details</CardTitle>
         </CardHeader>
-        <CardContent className="grid gap-3 sm:grid-cols-3">
-          <div className="space-y-1.5 sm:col-span-2">
+        {/* Three columns at every width, not from `sm` up: the name and the
+            servings are a pair, and stacking them on a phone spent a whole
+            line on a box that holds the digit 3. */}
+        <CardContent className="grid grid-cols-3 gap-3">
+          <div className="col-span-2 space-y-1.5">
             <Label htmlFor="r-name">Name</Label>
             <Input
               id="r-name"
@@ -450,7 +514,7 @@ export default function RecipeEditorPage() {
               onChange={(e) => setServings(e.target.value)}
             />
           </div>
-          <div className="space-y-1.5 sm:col-span-3">
+          <div className="col-span-3 space-y-1.5">
             <Label htmlFor="r-desc">Description</Label>
             {/* A textarea, not an input: a description is allowed to be two
                 lines, and a single-line box silently ate the second one. */}
@@ -462,7 +526,7 @@ export default function RecipeEditorPage() {
               onChange={(e) => setDescription(e.target.value)}
             />
           </div>
-          <div className="space-y-1.5 sm:col-span-3">
+          <div className="col-span-3 space-y-1.5">
             <Label htmlFor="r-inst">Method</Label>
             <Textarea
               id="r-inst"
@@ -479,7 +543,7 @@ export default function RecipeEditorPage() {
             </p>
           </div>
 
-          <div className="flex items-start gap-3 rounded-md border p-3 sm:col-span-3">
+          <div className="col-span-3 flex items-start gap-3 rounded-md border p-3">
             <Switch
               id="r-public"
               checked={isPublic}
@@ -521,8 +585,17 @@ export default function RecipeEditorPage() {
           ) : (
             <ul className="divide-y">
               {items.map((item, index) => (
-                <li key={item.key} className="flex items-center gap-3 py-2.5">
-                  <div className="min-w-0 flex-1">
+                // An input, a unit, a figure and a remove button beside a name
+                // is five things competing for 280 pixels, and the name lost:
+                // on a phone the list showed four amount boxes and no
+                // ingredients. So the name takes the first line with the
+                // button that removes it, and the amount sits under it where
+                // it has room to be typed into.
+                <li
+                  key={item.key}
+                  className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 gap-y-2 py-2.5 sm:grid-cols-[minmax(0,1fr)_auto_auto]"
+                >
+                  <div className="col-start-1 row-start-1 min-w-0">
                     {item.kind === 'text' ? (
                       // Free text stays editable in place: there is no record
                       // behind it to open, and re-picking it to fix a typo
@@ -568,20 +641,30 @@ export default function RecipeEditorPage() {
                       )
                     )}
                   </div>
-                  {item.kind === 'text' ? (
-                    // No amount and no calories: both would be numbers the
-                    // totals deliberately ignore.
-                    <span className="text-muted-foreground w-[10.5rem] text-right text-xs">
-                      not counted
-                    </span>
-                  ) : (
-                    <>
-                      <div className="flex items-center gap-1.5">
+                  <div
+                    className={cn(
+                      'col-span-2 col-start-1 row-start-2 flex items-center gap-2 sm:col-span-1 sm:col-start-2 sm:row-start-1',
+                      // A free-text line has nothing to put on the second
+                      // row, and the sub-line under its name already says it
+                      // is not counted. Wide enough for a column, the words
+                      // keep the amounts of the rows above them lined up.
+                      item.kind === 'text' && 'max-sm:hidden',
+                    )}
+                  >
+                    {item.kind === 'text' ? (
+                      // No amount and no calories: both would be numbers the
+                      // totals deliberately ignore.
+                      <span className="text-muted-foreground w-[10.5rem] text-right text-xs">
+                        not counted
+                      </span>
+                    ) : (
+                      <>
                         <Input
                           type="number"
                           min={item.kind === 'recipe' ? 0.01 : 0.1}
                           step="any"
-                          className="tabular w-20 text-right"
+                          inputMode="decimal"
+                          className="tabular w-24 text-right"
                           aria-label={`${item.name} ${item.kind === 'recipe' ? 'servings' : 'grams'}`}
                           value={item.amount}
                           onChange={(e) =>
@@ -595,15 +678,16 @@ export default function RecipeEditorPage() {
                         <span className="text-muted-foreground w-12 text-xs">
                           {item.kind === 'recipe' ? 'servings' : 'g'}
                         </span>
-                      </div>
-                      <span className="text-muted-foreground tabular w-20 text-right text-xs">
-                        {kcal(item.perUnit.calories_kcal * item.amount)}
-                      </span>
-                    </>
-                  )}
+                        <span className="text-muted-foreground tabular ml-auto w-20 text-right text-xs sm:ml-0">
+                          {kcal(item.perUnit.calories_kcal * item.amount)}
+                        </span>
+                      </>
+                    )}
+                  </div>
                   <Button
                     variant="ghost"
                     size="icon-sm"
+                    className="col-start-2 row-start-1 sm:col-start-3"
                     aria-label={`Remove ${item.name}`}
                     onClick={() => setItems((prev) => prev.filter((_, i) => i !== index))}
                   >
@@ -627,7 +711,13 @@ export default function RecipeEditorPage() {
       />
 
       <ErrorNote error={save.error} />
-      <div className="flex flex-wrap items-center gap-3">
+      {/* On a phone, saving stays within reach of a thumb: a recipe form is
+          several screens tall by the time it has a method and six
+          ingredients, and a Save button at the bottom of it meant scrolling
+          back past everything you had just typed to commit it. It clears the
+          home indicator on the way. Above `sm` the form fits a screen and the
+          button stays where it was, at the end of the page. */}
+      <div className="max-sm:bg-background/90 flex flex-wrap items-center gap-3 max-sm:sticky max-sm:bottom-0 max-sm:z-20 max-sm:-mx-4 max-sm:border-t max-sm:px-4 max-sm:py-3 max-sm:pb-[max(0.75rem,env(safe-area-inset-bottom))] max-sm:backdrop-blur-sm">
         <Button
           disabled={
             save.isPending ||
@@ -664,7 +754,7 @@ export default function RecipeEditorPage() {
             <DialogTitle>Add ingredient</DialogTitle>
           </DialogHeader>
           <Tabs defaultValue="food">
-            <TabsList>
+            <TabsList className="grid w-full grid-cols-3">
               <TabsTrigger value="food">Food</TabsTrigger>
               <TabsTrigger value="recipe">Recipe</TabsTrigger>
               <TabsTrigger value="text">Just text</TabsTrigger>
