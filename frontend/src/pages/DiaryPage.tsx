@@ -18,6 +18,7 @@ import {
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Separator } from '@/components/ui/separator'
+import { Switch } from '@/components/ui/switch'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import FoodPicker from '@/components/FoodPicker'
 import {
@@ -44,6 +45,18 @@ export default function DiaryPage() {
   const remove = useMutation({
     mutationFn: (id: string) => api.deleteDiaryEntry(id),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['diary'] }),
+  })
+
+  // "I logged everything": the one fact the diary cannot infer. A day with
+  // nothing in it and the flag on is a fast day, which is why the toggle is
+  // offered on every day rather than only once something is logged.
+  const setComplete = useMutation({
+    mutationFn: (complete: boolean) => api.setDayComplete(date, complete),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['diary'] })
+      // The estimate on the home page reads only complete days.
+      queryClient.invalidateQueries({ queryKey: ['estimates'] })
+    },
   })
 
   const calorieStatus = day.data?.targets.find((t) => t.nutrient === 'calories_kcal')
@@ -91,8 +104,23 @@ export default function DiaryPage() {
         <Card>
           <CardHeader>
             <CardTitle>{prettyDate(date)}</CardTitle>
+            <CardAction>
+              <Label
+                htmlFor="day-complete"
+                className="text-muted-foreground flex cursor-pointer items-center gap-2 text-xs font-normal"
+              >
+                <Switch
+                  id="day-complete"
+                  checked={day.data.complete}
+                  disabled={setComplete.isPending}
+                  onCheckedChange={(checked) => setComplete.mutate(checked)}
+                />
+                I logged everything {date === today() ? 'today' : 'this day'}
+              </Label>
+            </CardAction>
           </CardHeader>
           <CardContent className="space-y-4">
+            <ErrorNote error={setComplete.error} />
             <div className="flex flex-wrap items-baseline gap-3">
               <strong className="tabular text-3xl font-bold tracking-tight">
                 {kcal(day.data.total.calories_kcal)}

@@ -409,6 +409,28 @@ a data concern rather than a schema change.
 missing data, not a zero-calorie day; averaging it in would drag every average
 down and misrepresent the week.
 
+**A day is complete when its owner says so, and only complete days feed the
+estimator.** Energy balance is the one identity in this domain that is
+actually true — expenditure is what went in less what was stored — and the
+only thing that can make it lie is a half-logged day counted as a small one.
+The diary cannot tell that day from a fast day; both are a day with little in
+it. So the distinction is stated, once per day, by the one person who knows,
+and the adaptive estimate reads nothing else: mean intake on the days marked
+"I logged everything", less what a least-squares line through the weigh-ins
+stored at 7700 kcal/kg. A complete day with no entries is a real zero and is
+listed in the summary with zero entries rather than dropped, because dropping
+it would be the one way to make the flag invisible; the summary's average
+keeps its meaning and stays over days with entries.
+
+The estimate refuses to say a number on thin data — seven complete days and two
+weigh-ins a week apart, or it reports what is still needed, as counts and as a
+sentence, with `ready: false` so a client never has to guess from a missing
+field. The same trend, extended, is the goal projection; it says when the
+target is reached, or that the trend is flat or heading away, rather than
+projecting a date from a slope that is the scale's own noise. A rate past 1 % of
+body weight a week carries a caution on the number, which is all it is: none of
+this is advice, and everything it prices lands as an ordinary, editable target.
+
 **Imported foods are read-only; your own are editable.** An imported row mirrors
 an upstream record, so letting it be edited would silently diverge from the
 source it claims to come from. Imported foods are shared across accounts —
@@ -482,6 +504,9 @@ GET    /recipes/{id}             PUT    /recipes/{id}           DELETE /recipes/
 GET    /diary                    POST   /diary
 GET    /diary/day                        # one day, grouped by meal, vs targets
 GET    /diary/summary                    # per-day totals over a range
+PUT    /diary/day/{date}/complete        # "I logged everything": { complete }
+GET    /estimates/tdee                   # expenditure by energy balance, or what is still needed
+GET    /estimates/projection             # when the trend meets the target; ?by= prices a deadline
 GET    /diary/{id}               PATCH  /diary/{id}             DELETE /diary/{id}
 
 POST   /mcp                              # MCP over Streamable HTTP, API keys only
