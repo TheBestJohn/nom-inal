@@ -120,6 +120,19 @@ status "an unknown nutrient is refused" 400 -X PATCH "$BASE/profile" -H "$AUTH" 
 curl -fsS -X PATCH "$BASE/profile" -H "$AUTH" -H 'content-type: application/json' \
   -d '{"shown_nutrients":["calories_kcal","protein_g","carbs_g","fat_g"],"chart_nutrients":["calories_kcal"]}' >/dev/null
 
+echo "== units"
+# Storage is metric; units are how the client shows and reads body figures.
+# The API never sees a pound: the preference is stored, the numbers are not
+# converted, and food amounts are grams whatever it says.
+expect "metric until chosen"   "$(curl -fsS "$BASE/profile" -H "$AUTH" | j "['units']")" "metric"
+expect "imperial can be chosen" \
+  "$(curl -fsS -X PATCH "$BASE/profile" -H "$AUTH" -H 'content-type: application/json' -d '{"units":"imperial"}' | j "['units']")" "imperial"
+expect "it survives a reload"  "$(curl -fsS "$BASE/profile" -H "$AUTH" | j "['units']")" "imperial"
+expect "and the stored height is still centimetres" \
+  "$(curl -fsS -X PATCH "$BASE/profile" -H "$AUTH" -H 'content-type: application/json' -d '{"height_cm":181}' | j " and (d['height_cm'], d['units'])")" "(181.0, 'imperial')"
+status "an unknown unit system is refused" 400 -X PATCH "$BASE/profile" -H "$AUTH" -H 'content-type: application/json' -d '{"units":"stone"}'
+curl -fsS -X PATCH "$BASE/profile" -H "$AUTH" -H 'content-type: application/json' -d '{"units":"metric"}' >/dev/null
+
 echo "== goals and budgets"
 # A budget is a ceiling, a goal is a floor. The same arithmetic, read in
 # opposite directions -- which is the whole point of storing the direction.
@@ -180,6 +193,68 @@ expect "and a re-import will not undo the correction" \
   "$(curl -fsS -X POST "$BASE/foods/import" -H "$AUTH" -H 'content-type: application/json' \
       -d '{"source":"usda","source_id":"173944","name":"Bananas, raw","calories_kcal":89,"protein_g":1.09,"carbs_g":22.84,"fat_g":0.33,"serving_size_g":118}' | j "['name']")" \
   "Bananas, raw (corrected)"
+
+echo "== household portions"
+# Nobody weighs a cup of oats; they measure a cup. A portion is the answer to
+# "how many grams is that for this food", kept per food, offered beside grams,
+# and never what gets stored: the entry is grams whatever route led to them.
+CUP=$(curl -fsS -X POST "$BASE/foods/$OATS/portions" -H "$AUTH" -H 'content-type: application/json' \
+  -d '{"label":"1 cup","grams":80}')
+expect "a portion is added"               "$(echo "$CUP" | j " and [(p['label'], p['grams'], p['source']) for p in d['portions']]")" "[('1 cup', 80.0, 'user')]"
+expect "and does not count as an edit"    "$(echo "$CUP" | j "['revision']")" "1"
+expect "the list carries it too"          "$(curl -fsS "$BASE/foods?q=Rolled%20oats" -H "$AUTH" | j " and [p['label'] for f in d if f['id']=='$OATS' for p in f['portions']]")" "['1 cup']"
+# The picker reads the search stream, so a portion has to arrive there as
+# well. A run-scoped name: the table is global and persistent, and the search
+# collapses identical foods to the oldest, which on a reused database is a
+# previous run's copy with no portions on it.
+PORTION_NAME="Portion probe $(date +%s)-$RANDOM"
+PORTION_FOOD=$(curl -fsS -X POST "$BASE/foods" -H "$AUTH" -H 'content-type: application/json' \
+  -d "{\"name\":\"$PORTION_NAME\",\"calories_kcal\":50,\"protein_g\":1,\"carbs_g\":2,\"fat_g\":3}" | j "['id']")
+curl -fsS -X POST "$BASE/foods/$PORTION_FOOD/portions" -H "$AUTH" -H 'content-type: application/json' -d '{"label":"1 mug","grams":300}' >/dev/null
+expect "and so does the search stream" \
+  "$(curl -fsSN "$BASE/search/foods?q=$(python3 -c 'import sys,urllib.parse;print(urllib.parse.quote(sys.argv[1]))' "$PORTION_NAME")&limit=5" -H "$AUTH" \
+    | grep '^data:' | sed 's/^data: *//' \
+    | NAME="$PORTION_NAME" python3 -c 'import sys,json,os
+hits=[f for line in sys.stdin for f in json.loads(line).get("results",[]) if f["name"]==os.environ["NAME"]]
+print([p["label"] for f in hits for p in f["portions"]])')" "['1 mug']"
+status "the same label twice is refused"  409 -X POST "$BASE/foods/$OATS/portions" -H "$AUTH" -H 'content-type: application/json' -d '{"label":"1 cup","grams":90}'
+status "a blank label is refused"         400 -X POST "$BASE/foods/$OATS/portions" -H "$AUTH" -H 'content-type: application/json' -d '{"label":"   ","grams":90}'
+status "a weightless portion is refused"  400 -X POST "$BASE/foods/$OATS/portions" -H "$AUTH" -H 'content-type: application/json' -d '{"label":"1 pinch","grams":0}'
+status "an unknown food has no portions"  404 -X POST "$BASE/foods/00000000-0000-0000-0000-000000000000/portions" -H "$AUTH" -H 'content-type: application/json' -d '{"label":"1 cup","grams":80}'
+CUP_ID=$(echo "$CUP" | j "['portions'][0]['id']")
+expect "removing it returns the food without it" \
+  "$(curl -fsS -X DELETE "$BASE/foods/$OATS/portions/$CUP_ID" -H "$AUTH" | j "['portions']")" "[]"
+status "removing it twice is a 404"       404 -X DELETE "$BASE/foods/$OATS/portions/$CUP_ID" -H "$AUTH"
+
+# A provider's portions arrive with the import. USDA's own detail record is
+# not reachable here, so the suite sends them in the body, which is the same
+# path the import takes once it has fetched them. $BAN was corrected above and
+# sits at revision 2: portions refresh regardless, because they are outside
+# the revision model and there is no correction to undo.
+#
+# The banana is the same global row on every run, so a reused database may
+# still carry the portions this section adds; start from none.
+for PID in $(curl -fsS "$BASE/foods/$BAN" -H "$AUTH" | j " and ' '.join(p['id'] for p in d['portions'])"); do
+  curl -fsS -X DELETE "$BASE/foods/$BAN/portions/$PID" -H "$AUTH" >/dev/null
+done
+IMPORTED=$(curl -fsS -X POST "$BASE/foods/import" -H "$AUTH" -H 'content-type: application/json' \
+  -d '{"source":"usda","source_id":"173944","name":"Bananas, raw","calories_kcal":89,"protein_g":1.09,"carbs_g":22.84,"fat_g":0.33,"serving_size_g":118,"portions":[{"label":"1 medium","grams":118},{"label":"1 cup, sliced","grams":150}]}')
+expect "an import carries the provider's portions" \
+  "$(echo "$IMPORTED" | j " and [(p['label'], p['grams'], p['source']) for p in d['portions']]")" \
+  "[('1 medium', 118.0, 'usda'), ('1 cup, sliced', 150.0, 'usda')]"
+expect "on the corrected food, uncorrected" "$(echo "$IMPORTED" | j "['name']")" "Bananas, raw (corrected)"
+curl -fsS -X POST "$BASE/foods/$BAN/portions" -H "$AUTH" -H 'content-type: application/json' -d '{"label":"1 large","grams":136}' >/dev/null
+REIMPORTED=$(curl -fsS -X POST "$BASE/foods/import" -H "$AUTH" -H 'content-type: application/json' \
+  -d '{"source":"usda","source_id":"173944","name":"Bananas, raw","calories_kcal":89,"protein_g":1.09,"carbs_g":22.84,"fat_g":0.33,"serving_size_g":118,"portions":[{"label":"1 medium","grams":120},{"label":"1 large","grams":999}]}')
+expect "a re-import refreshes the provider's figure" \
+  "$(echo "$REIMPORTED" | j " and [p['grams'] for p in d['portions'] if p['label']=='1 medium']")" "[120.0]"
+expect "keeps a provider portion it no longer sends" \
+  "$(echo "$REIMPORTED" | j " and [p['grams'] for p in d['portions'] if p['label']=='1 cup, sliced']")" "[150.0]"
+expect "and never overwrites what a person typed" \
+  "$(echo "$REIMPORTED" | j " and [(p['grams'], p['source']) for p in d['portions'] if p['label']=='1 large']")" "[(136.0, 'user')]"
+expect "an import that brings none leaves them alone" \
+  "$(curl -fsS -X POST "$BASE/foods/import" -H "$AUTH" -H 'content-type: application/json' \
+      -d '{"source":"usda","source_id":"173944","name":"Bananas, raw","calories_kcal":89,"protein_g":1.09,"carbs_g":22.84,"fat_g":0.33,"serving_size_g":118}' | j " and len(d['portions'])")" "3"
 
 echo "== recipes"
 # 100g oats (379) + 300g milk (183) + 118g banana (105.02) = 667.02 over 2 servings
@@ -329,6 +404,68 @@ expect "patch recipe servings rescales" \
   "667.02"
 status "reject both food_id and recipe_id" 400 -X POST "$BASE/diary" -H "$AUTH" -H 'content-type: application/json' -d "{\"food_id\":\"$BAN\",\"recipe_id\":\"$RID\",\"quantity_g\":10}"
 status "reject neither food_id nor recipe_id" 400 -X POST "$BASE/diary" -H "$AUTH" -H 'content-type: application/json' -d '{"quantity_g":10}'
+
+echo "== copying a day or a meal"
+# 2026-01-15 holds the oatmeal bowl at 2 servings (667.02) for breakfast and
+# 118 g of banana (105.02) for lunch. A copy is the same things in the same
+# amounts on another date, as fresh entries of their own.
+COPIED=$(curl -fsS -X POST "$BASE/diary/copy" -H "$AUTH" -H 'content-type: application/json' \
+  -d '{"from_date":"2026-01-15","to_date":"2026-03-01"}')
+expect "the whole day copies"           "$(echo "$COPIED" | j "['copied']")" "2"
+expect "with its meals"                 "$(echo "$COPIED" | j " and sorted(e['meal'] for e in d['entries'])")" "['breakfast', 'lunch']"
+expect "and its amounts"                "$(echo "$COPIED" | j " and sorted([(e['quantity_g'], e['recipe_servings']) for e in d['entries']], key=str)")" "[(118.0, None), (None, 2.0)]"
+expect "onto the target date"           "$(echo "$COPIED" | j " and {e['logged_on'] for e in d['entries']}")" "{'2026-03-01'}"
+expect "so the target day now totals the same" \
+  "$(curl -fsS "$BASE/diary/day?date=2026-03-01" -H "$AUTH" | j "['total']['calories_kcal']")" "772.04"
+expect "and the source is untouched" \
+  "$(curl -fsS "$BASE/diary/day?date=2026-01-15" -H "$AUTH" | j "['total']['calories_kcal']")" "772.04"
+MEAL_COPY=$(curl -fsS -X POST "$BASE/diary/copy" -H "$AUTH" -H 'content-type: application/json' \
+  -d '{"from_date":"2026-01-15","to_date":"2026-03-02","meal":"Lunch"}')
+expect "one meal copies alone"          "$(echo "$MEAL_COPY" | j " and (d['copied'], d['meal'], d['entries'][0]['name'])")" "(1, 'lunch', 'Bananas, raw (corrected)')"
+expect "an empty source copies nothing, and says so" \
+  "$(curl -fsS -X POST "$BASE/diary/copy" -H "$AUTH" -H 'content-type: application/json' \
+      -d '{"from_date":"2025-06-30","to_date":"2026-03-02"}' | j "['copied']")" "0"
+status "a day cannot be copied onto itself" 400 -X POST "$BASE/diary/copy" -H "$AUTH" -H 'content-type: application/json' -d '{"from_date":"2026-01-15","to_date":"2026-01-15"}'
+status "another account's diary is not a source" 200 -X POST "$BASE/diary/copy" -H "$AUTH2" -H 'content-type: application/json' -d '{"from_date":"2026-01-15","to_date":"2026-03-01"}'
+expect "it just has nothing to copy" \
+  "$(curl -fsS -X POST "$BASE/diary/copy" -H "$AUTH2" -H 'content-type: application/json' -d '{"from_date":"2026-01-15","to_date":"2026-03-01"}' | j "['copied']")" "0"
+
+echo "== a meal as a recipe"
+# What was logged becomes the ingredient list as it was logged: a food in its
+# grams, a logged recipe as a sub-recipe in its servings. The sub-recipe is
+# linked, not unpacked, for the same reason any sub-recipe is.
+curl -fsS -X POST "$BASE/diary" -H "$AUTH" -H 'content-type: application/json' \
+  -d "{\"logged_on\":\"2026-03-03\",\"meal\":\"dinner\",\"food_id\":\"$BAN\",\"quantity_g\":118}" >/dev/null
+curl -fsS -X POST "$BASE/diary" -H "$AUTH" -H 'content-type: application/json' \
+  -d "{\"logged_on\":\"2026-03-03\",\"meal\":\"dinner\",\"recipe_id\":\"$RID\",\"recipe_servings\":1}" >/dev/null
+SAVED=$(curl -fsS -X POST "$BASE/recipes/from-meal" -H "$AUTH" -H 'content-type: application/json' \
+  -d '{"date":"2026-03-03","meal":"dinner","name":"Tuesday dinner"}')
+SAVED_ID=$(echo "$SAVED" | j "['id']")
+expect "the meal becomes a recipe"          "$(echo "$SAVED" | j " and (d['name'], d['servings'], len(d['items']))")" "('Tuesday dinner', 1.0, 2)"
+# 105.02 for the banana plus one serving of the bowl at 333.51.
+expect "with the meal's own total"          "$(echo "$SAVED" | j "['total']['calories_kcal']")" "438.53"
+expect "the food is an ingredient in grams" "$(echo "$SAVED" | j " and [(i['food_id'], i['quantity_g']) for i in d['items'] if i['food_id']]")" "[('$BAN', 118.0)]"
+expect "the logged recipe stays a recipe"   "$(echo "$SAVED" | j " and [(i['sub_recipe_id'], i['servings']) for i in d['items'] if i['sub_recipe_id']]")" "[('$RID', 1.0)]"
+expect "and reads back like any recipe"     "$(curl -fsS "$BASE/recipes/$SAVED_ID" -H "$AUTH" | j "['total']['calories_kcal']")" "438.53"
+status "an empty meal makes no recipe"      400 -X POST "$BASE/recipes/from-meal" -H "$AUTH" -H 'content-type: application/json' -d '{"date":"2025-06-30","meal":"dinner","name":"Nothing"}'
+status "and a name is required"             400 -X POST "$BASE/recipes/from-meal" -H "$AUTH" -H 'content-type: application/json' -d '{"date":"2026-03-03","meal":"dinner","name":""}'
+
+echo "== recent foods"
+# What the picker shows before anyone types: each thing logged, once, most
+# recent first, most often first among things from the same day, with the
+# amount used last time. The banana is on 2026-03-03 with four entries in all;
+# the bowl is there too with three.
+RECENT=$(curl -fsS "$BASE/foods/recent" -H "$AUTH")
+expect "the most recent day leads, most-logged first" \
+  "$(echo "$RECENT" | j " and (d[0]['food']['id'], d[0]['recipe'], d[0]['times_logged'], d[0]['last_logged_on'])")" "('$BAN', None, 4, '2026-03-03')"
+expect "with the grams used last time"      "$(echo "$RECENT" | j "[0]['last_quantity_g']")" "118.0"
+expect "a recipe is in the same list"       "$(echo "$RECENT" | j " and (d[1]['food'], d[1]['recipe']['id'], d[1]['times_logged'])")" "(None, '$RID', 3)"
+expect "with the servings used last time"   "$(echo "$RECENT" | j "[1]['last_recipe_servings']")" "1.0"
+expect "and one serving's figures"          "$(echo "$RECENT" | j "[1]['recipe']['per_serving']['calories_kcal']")" "333.51"
+expect "a food arrives with its portions"   "$(echo "$RECENT" | j " and sorted(p['label'] for p in d[0]['food']['portions'])")" "['1 cup, sliced', '1 large', '1 medium']"
+expect "each item appears once"             "$(echo "$RECENT" | j " and len(d) == len({(i['food'] or {}).get('id') or i['recipe']['id'] for i in d})")" "True"
+expect "limit is honoured"                  "$(curl -fsS "$BASE/foods/recent?limit=1" -H "$AUTH" | j ".__len__()")" "1"
+expect "an account with no diary has none"  "$(curl -fsS "$BASE/foods/recent" -H "$AUTH3" | j ".__len__()")" "0"
 
 echo "== tracking focus"
 # Why you are tracking. NULL until the welcome flow has asked, which is what
@@ -1050,7 +1187,7 @@ status "recipe in use cannot be deleted" 400 -X DELETE "$BASE/recipes/$RID" -H "
 
 echo "== openapi"
 PATHS=$(curl -fsS "${BASE%/api/v1}/api/v1/openapi.json" | j " and len(d['paths'])")
-if [ "$PATHS" -ge 45 ]; then pass "spec documents $PATHS paths"; else fail "spec only documents $PATHS paths"; fi
+if [ "$PATHS" -ge 50 ]; then pass "spec documents $PATHS paths"; else fail "spec only documents $PATHS paths"; fi
 
 echo
 if [ "$failures" -eq 0 ]; then

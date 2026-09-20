@@ -1,6 +1,6 @@
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum::Router;
 use serde::Deserialize;
 use utoipa::IntoParams;
@@ -11,7 +11,8 @@ use crate::auth::CurrentUser;
 use crate::domain::nutrients::Nutrients;
 use crate::domain::photo::photo_url;
 use crate::domain::recipe::{
-    Recipe, RecipeItem, RecipeItemRow, RecipeRow, RecipeSummary, UpsertRecipeRequest,
+    FromMealRequest, Recipe, RecipeItem, RecipeItemInput, RecipeItemRow, RecipeRow, RecipeSummary,
+    UpsertRecipeRequest,
 };
 use crate::error::{ApiError, ApiResult};
 use crate::extract::Json;
@@ -20,6 +21,7 @@ use crate::state::AppState;
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/", get(list).post(create))
+        .route("/from-meal", post(from_meal))
         .route("/{id}", get(get_one).put(update).delete(delete))
 }
 
@@ -187,7 +189,18 @@ pub async fn create(
     Json(body): Json<UpsertRecipeRequest>,
 ) -> ApiResult<(StatusCode, Json<Recipe>)> {
     body.validate()?;
+    let id = insert_recipe(&state, user.id, &body).await?;
+    let full = load_recipe(&state, user.id, id).await?;
+    Ok((StatusCode::CREATED, Json(full)))
+}
 
+/// Write a new recipe and its ingredients. The one insert path: creating a
+/// recipe from a form and from a logged meal both come through here.
+async fn insert_recipe(
+    state: &AppState,
+    user_id: Uuid,
+    body: &UpsertRecipeRequest,
+) -> ApiResult<Uuid> {
     // Header and ingredients are written in one transaction: a recipe that
     // exists with half its ingredients would silently misreport its macros.
     let mut tx = state.db.begin().await?;
@@ -197,7 +210,7 @@ pub async fn create(
          VALUES ($1, $2, $3, $4, $5, $6)
          RETURNING {RECIPE_COLUMNS}"
     ))
-    .bind(user.id)
+    .bind(user_id)
     .bind(body.name.trim())
     .bind(body.description.as_deref())
     .bind(body.instructions.as_deref())
@@ -206,10 +219,86 @@ pub async fn create(
     .fetch_one(&mut *tx)
     .await?;
 
-    insert_items(&mut tx, recipe.id, user.id, &body).await?;
+    insert_items(&mut tx, recipe.id, user_id, body).await?;
     tx.commit().await?;
+    Ok(recipe.id)
+}
 
-    let full = load_recipe(&state, user.id, recipe.id).await?;
+#[utoipa::path(
+    post, path = "/api/v1/recipes/from-meal", tag = "recipes",
+    security(("bearer" = [])),
+    request_body = FromMealRequest,
+    responses(
+        (status = 201, description = "The new recipe, built from that meal's entries", body = Recipe),
+        (status = 400, description = "Nothing logged for that meal", body = crate::error::ErrorBody),
+    )
+)]
+pub async fn from_meal(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    Json(body): Json<FromMealRequest>,
+) -> ApiResult<(StatusCode, Json<Recipe>)> {
+    body.validate()?;
+    let meal = body.meal.trim().to_lowercase();
+    if meal.is_empty() {
+        return Err(ApiError::bad_request("meal is required"));
+    }
+
+    // The entries as logged, in the order they were logged. A food entry is
+    // grams of a food and a recipe entry is servings of a recipe, which is
+    // exactly the shape an ingredient takes — so the meal maps onto the
+    // request the ordinary create path takes, and goes through it. A logged
+    // recipe stays a sub-recipe rather than being unpacked into its foods:
+    // unpacking would freeze its ingredients, and the point of linking is
+    // that correcting the base recipe corrects what was built on it.
+    #[derive(sqlx::FromRow)]
+    struct Entry {
+        food_id: Option<Uuid>,
+        recipe_id: Option<Uuid>,
+        quantity_g: Option<f64>,
+        recipe_servings: Option<f64>,
+    }
+    let entries: Vec<Entry> = sqlx::query_as(
+        "SELECT food_id, recipe_id, quantity_g, recipe_servings
+         FROM diary_entries
+         WHERE user_id = $1 AND logged_on = $2 AND meal = $3
+         ORDER BY created_at ASC",
+    )
+    .bind(user.id)
+    .bind(body.date)
+    .bind(&meal)
+    .fetch_all(&state.db)
+    .await?;
+
+    if entries.is_empty() {
+        return Err(ApiError::bad_request(format!(
+            "nothing logged for {meal} on {}",
+            body.date
+        )));
+    }
+
+    let request = UpsertRecipeRequest {
+        name: body.name.clone(),
+        description: None,
+        instructions: None,
+        servings: body.servings.unwrap_or(1.0),
+        is_public: body.is_public,
+        items: entries
+            .into_iter()
+            .map(|e| RecipeItemInput {
+                food_id: e.food_id,
+                sub_recipe_id: e.recipe_id,
+                label: None,
+                quantity_g: e.quantity_g,
+                servings: e.recipe_servings,
+                note: None,
+            })
+            .collect(),
+    };
+    request.validate()?;
+
+    let id = insert_recipe(&state, user.id, &request).await?;
+    let full = load_recipe(&state, user.id, id).await?;
     Ok((StatusCode::CREATED, Json(full)))
 }
 

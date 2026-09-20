@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { ArrowLeft, Barcode, Globe, Plus, Search } from 'lucide-react'
+import { ArrowLeft, Barcode, BookOpen, Globe, History, Plus, Search } from 'lucide-react'
 
 import { api } from '@/api/endpoints'
-import type { ExternalFood, Food } from '@/api/types'
-import { kcal, round, sourceLabel } from '@/lib/format'
+import type { ExternalFood, Food, RecentItem, RecentRecipe } from '@/api/types'
+import { grams, kcal, prettyDate, round, sourceLabel } from '@/lib/format'
 import { useFoodSearch, type SearchTier } from '@/lib/useFoodSearch'
 import { cn } from '@/lib/utils'
 import { Badge } from '@/components/ui/badge'
@@ -13,6 +13,7 @@ import { Input } from '@/components/ui/input'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { ErrorNote, SourceBadge, Spinner } from '@/components/shared'
+import BarcodeScanner from '@/components/BarcodeScanner'
 import FoodForm from '@/components/FoodForm'
 
 /** How each tier is labelled in the list. */
@@ -31,12 +32,21 @@ const TIER_LABEL: Record<SearchTier, string> = {
  * finishes. External hits are not foods yet — picking one imports it first
  * (idempotent on source + id) and hands back a real local food, so callers
  * never care where it came from.
+ *
+ * Before anything is typed, the list is what you logged recently, each with
+ * the amount you used last time: most meals are the same things as last
+ * time, and the search box is for the rest. Recipes are in that list too,
+ * since they are logged like foods; a caller that can log one passes
+ * `onPickRecipe`, and one that cannot simply does not see them.
  */
 export default function FoodPicker({
   onPick,
+  onPickRecipe,
   autoFocus = true,
 }: {
-  onPick: (food: Food) => void
+  /** `grams` is a suggestion — the amount used last time, when there was one. */
+  onPick: (food: Food, grams?: number) => void
+  onPickRecipe?: (recipe: RecentRecipe, servings: number) => void
   autoFocus?: boolean
 }) {
   const [term, setTerm] = useState('')
@@ -57,6 +67,13 @@ export default function FoodPicker({
   }, [term])
 
   const search = useFoodSearch(debounced, { limit: 8 })
+
+  const recent = useQuery({
+    queryKey: ['foods', 'recent'],
+    queryFn: () => api.recentFoods(12),
+  })
+  // Recipes only when the caller can log one.
+  const recentItems = (recent.data ?? []).filter((item) => item.food || onPickRecipe)
 
   const external = useQuery({
     queryKey: ['foods', 'external', externalTerm],
@@ -161,7 +178,28 @@ export default function FoodPicker({
           )}
 
           {!debounced && (
-            <p className="text-muted-foreground py-2 text-sm">Start typing to search every food.</p>
+            <div className="space-y-1.5">
+              {recentItems.length > 0 && (
+                <p className="text-muted-foreground flex items-center gap-1 px-1 text-[11px] font-medium tracking-wide uppercase">
+                  <History className="size-3" /> Recent
+                </p>
+              )}
+              {recent.isLoading && <Spinner label="Loading what you logged recently…" />}
+              <ErrorNote error={recent.error} />
+              {recentItems.map((item) => (
+                <RecentRow
+                  key={item.food?.id ?? item.recipe!.id}
+                  item={item}
+                  onPick={onPick}
+                  onPickRecipe={onPickRecipe}
+                />
+              ))}
+              {recent.data && recentItems.length === 0 && (
+                <p className="text-muted-foreground py-2 text-sm">
+                  Start typing to search every food. What you log will show up here for next time.
+                </p>
+              )}
+            </div>
           )}
         </div>
 
@@ -219,6 +257,15 @@ export default function FoodPicker({
       </TabsContent>
 
       <TabsContent value="barcode" className="space-y-3">
+        {/* A code read off the packet lands in the same box as one typed, so
+            what happens next is the same lookup either way. */}
+        <BarcodeScanner
+          onDetected={(code) => {
+            const digits = code.replace(/\D/g, '')
+            setBarcode(digits)
+            setSubmittedBarcode(digits)
+          }}
+        />
         <form
           className="flex gap-2"
           onSubmit={(e) => {
@@ -228,7 +275,8 @@ export default function FoodPicker({
         >
           <Input
             inputMode="numeric"
-            placeholder="Scan or type a UPC / EAN"
+            placeholder="Or type a UPC / EAN"
+            aria-label="Barcode"
             value={barcode}
             onChange={(e) => setBarcode(e.target.value)}
           />
@@ -289,6 +337,70 @@ function FoodRow({ food, onPick }: { food: Food; onPick: (food: Food) => void })
         </span>
       </span>
       <SourceBadge source={food.source} />
+    </button>
+  )
+}
+
+/**
+ * One thing logged before. The second line says how it was logged last time
+ * and what that came to, because that is what makes it one tap rather than
+ * a search followed by an amount.
+ */
+function RecentRow({
+  item,
+  onPick,
+  onPickRecipe,
+}: {
+  item: RecentItem
+  onPick: (food: Food, grams?: number) => void
+  onPickRecipe?: (recipe: RecentRecipe, servings: number) => void
+}) {
+  const when = prettyDate(item.last_logged_on)
+  const times = item.times_logged > 1 ? ` · ${item.times_logged}×` : ''
+
+  if (item.food) {
+    const food = item.food
+    const last = item.last_quantity_g ?? food.serving_size_g
+    return (
+      <button
+        type="button"
+        onClick={() => onPick(food, last)}
+        className={rowClass}
+        aria-label={`${food.name}, ${grams(last, 0)} as last time`}
+      >
+        <span className="min-w-0 flex-1">
+          <span className="block truncate font-medium">{food.name}</span>
+          <span className="text-muted-foreground block truncate text-xs">
+            {food.brand ? `${food.brand} · ` : ''}
+            {grams(last, 0)} · {kcal((food.calories_kcal * last) / 100)} · {when}
+            {times}
+          </span>
+        </span>
+        <SourceBadge source={food.source} />
+      </button>
+    )
+  }
+
+  const recipe = item.recipe!
+  const servings = item.last_recipe_servings ?? 1
+  return (
+    <button
+      type="button"
+      onClick={() => onPickRecipe?.(recipe, servings)}
+      className={rowClass}
+      aria-label={`${recipe.name}, ${round(servings, 2)} serving${servings === 1 ? '' : 's'} as last time`}
+    >
+      <span className="min-w-0 flex-1">
+        <span className="block truncate font-medium">{recipe.name}</span>
+        <span className="text-muted-foreground block truncate text-xs">
+          {round(servings, 2)} serving{servings === 1 ? '' : 's'} ·{' '}
+          {kcal(recipe.per_serving.calories_kcal * servings)} · {when}
+          {times}
+        </span>
+      </span>
+      <Badge variant="outline" className="text-[10px] tracking-wide uppercase">
+        <BookOpen className="size-3" /> Recipe
+      </Badge>
     </button>
   )
 }

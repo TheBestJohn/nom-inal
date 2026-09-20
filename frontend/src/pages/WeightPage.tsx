@@ -13,18 +13,21 @@ import {
 } from 'recharts'
 
 import { api } from '@/api/endpoints'
+import type { Units } from '@/api/types'
 import { useAuth } from '@/lib/auth'
 import {
   addDays,
-  kg,
-  kgToLb,
-  lbToKg,
   prettyDate,
   round,
   shortDate,
-  signed,
   today,
+  weight,
+  weightChange,
+  weightToKg,
+  weightUnit,
+  weightValue,
 } from '@/lib/format'
+import { useUnits } from '@/lib/useUnits'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { Card, CardAction, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -54,7 +57,10 @@ export default function WeightPage() {
   const { user } = useAuth()
   const queryClient = useQueryClient()
   const [rangeDays, setRangeDays] = useState(90)
-  const [unit, setUnit] = useState<'kg' | 'lb'>('kg')
+  // The account's preference, not a toggle of this page's own: choosing lb
+  // here holds on the home page and in Settings too.
+  const { units, setUnits } = useUnits()
+  const unit = weightUnit(units)
 
   const [date, setDate] = useState(today())
   const [value, setValue] = useState('')
@@ -79,7 +85,7 @@ export default function WeightPage() {
         recorded_on: date,
         // The API is metric; converting at this one edge keeps lb out of
         // everything else.
-        weight_kg: unit === 'kg' ? Number(value) : lbToKg(Number(value)),
+        weight_kg: round(weightToKg(Number(value), units), 2),
         body_fat_pct: bodyFat ? Number(bodyFat) : null,
         note: note || null,
       }),
@@ -96,21 +102,18 @@ export default function WeightPage() {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['weights'] }),
   })
 
-  const display = (v: number | null | undefined) =>
-    v === null || v === undefined ? '—' : unit === 'kg' ? kg(v) : `${round(kgToLb(v))} lb`
+  const display = (v: number | null | undefined) => weight(v, units)
 
   const series = (entries.data ?? [])
     .slice()
     .reverse()
     .map((w) => ({
       date: shortDate(w.recorded_on),
-      value: round(unit === 'kg' ? w.weight_kg : kgToLb(w.weight_kg), 2),
+      value: weightValue(w.weight_kg, units),
     }))
 
   const targetLine =
-    user?.target_weight_kg != null
-      ? round(unit === 'kg' ? user.target_weight_kg : kgToLb(user.target_weight_kg), 2)
-      : null
+    user?.target_weight_kg != null ? weightValue(user.target_weight_kg, units) : null
 
   return (
     <div className="space-y-4">
@@ -119,11 +122,12 @@ export default function WeightPage() {
         <ToggleGroup
           type="single"
           size="sm"
-          value={unit}
-          onValueChange={(v) => v && setUnit(v as 'kg' | 'lb')}
+          value={units}
+          onValueChange={(v) => v && setUnits(v as Units)}
+          aria-label="Units"
         >
-          <ToggleGroupItem value="kg">kg</ToggleGroupItem>
-          <ToggleGroupItem value="lb">lb</ToggleGroupItem>
+          <ToggleGroupItem value="metric">kg</ToggleGroupItem>
+          <ToggleGroupItem value="imperial">lb</ToggleGroupItem>
         </ToggleGroup>
       </div>
 
@@ -265,11 +269,7 @@ export default function WeightPage() {
                   <Stat label="Latest" value={display(stats.data.latest_kg)} />
                   <Stat
                     label="Change"
-                    value={
-                      stats.data.change_kg == null
-                        ? '—'
-                        : `${signed(unit === 'kg' ? stats.data.change_kg : kgToLb(stats.data.change_kg))} ${unit}`
-                    }
+                    value={weightChange(stats.data.change_kg, units)}
                     tone={(stats.data.change_kg ?? 0) <= 0 ? 'good' : 'bad'}
                   />
                   <Stat label="7-entry avg" value={display(stats.data.moving_average_7_kg)} />

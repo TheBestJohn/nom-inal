@@ -35,6 +35,14 @@ is kept as a custom meal name). `logged_on` is a date, `YYYY-MM-DD`, and
 defaults to **today in UTC** — pass it explicitly when the person's local day
 differs.
 
+A food may carry `portions` — household measures such as "1 cup" with a
+`grams` figure. "A cup of oats" is that portion's grams of the oats food;
+the entry is still written in `quantity_g`. `foods_recent` lists what the
+person logged most recently, with the amount they used last time, and is the
+place to resolve "the usual" or "what I had yesterday". `diary_copy` copies a
+day, or one meal of it, onto another date; `recipes_from_meal` turns a logged
+meal into a recipe without re-entering it.
+
 ## Recipes are graphs, and their macros are never stored
 
 A recipe's totals are computed on read from its ingredients, so correcting a

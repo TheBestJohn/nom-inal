@@ -195,6 +195,9 @@ fn map_product(p: Product) -> ExternalFood {
         // Deliberately NOT falling back to `quantity`: that is the package
         // size (e.g. "400 g"), which would read as a serving and mislead.
         serving_label: p.serving_size,
+        // OFF publishes one serving, which is already `serving_size_g`
+        // above; it has no list of household measures to carry over.
+        portions: Vec::new(),
     }
 }
 

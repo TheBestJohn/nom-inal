@@ -212,6 +212,26 @@ impl RecipeItemInput {
     }
 }
 
+/// Turn one meal of one day into a recipe.
+///
+/// The entries become the ingredient list as they were logged: a food in its
+/// grams, and a logged recipe as a sub-recipe in its servings — linked, not
+/// flattened, for the same reason any sub-recipe is.
+#[derive(Debug, Deserialize, Validate, ToSchema)]
+pub struct FromMealRequest {
+    pub date: chrono::NaiveDate,
+    /// `breakfast` | `lunch` | `dinner` | `snack`, or a custom meal name.
+    pub meal: String,
+    #[validate(length(min = 1, max = 200, message = "must be 1-200 characters"))]
+    pub name: String,
+    /// How many servings the meal was. Defaults to 1: what you ate was one
+    /// serving of it.
+    #[validate(range(min = 0.1, max = 1000.0, message = "must be between 0.1 and 1000"))]
+    pub servings: Option<f64>,
+    #[serde(default)]
+    pub is_public: bool,
+}
+
 #[derive(Debug, Deserialize, Validate, ToSchema)]
 pub struct UpsertRecipeRequest {
     #[validate(length(min = 1, max = 200, message = "must be 1-200 characters"))]

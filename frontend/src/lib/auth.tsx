@@ -2,7 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useState } 
 import type { ReactNode } from 'react'
 
 import { api } from '@/api/endpoints'
-import { tokenStore, UNAUTHORIZED_EVENT } from '@/api/client'
+import { ApiError, tokenStore, UNAUTHORIZED_EVENT } from '@/api/client'
 import type { Profile } from '@/api/types'
 
 interface AuthContextValue {
@@ -36,11 +36,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       .then((profile) => {
         if (!cancelled) setUser(profile)
       })
-      .catch(() => {
-        if (!cancelled) {
-          tokenStore.clear()
-          setUser(null)
-        }
+      .catch((err) => {
+        if (cancelled) return
+        // Only a server that answered gets to invalidate the token. A
+        // network failure — offline, or a proxy hiccup at boot — says
+        // nothing about the session, and clearing it would turn every
+        // flaky connection into a sign-out.
+        if (err instanceof ApiError) tokenStore.clear()
+        setUser(null)
       })
       .finally(() => {
         if (!cancelled) setLoading(false)

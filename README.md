@@ -310,6 +310,63 @@ something the totals deliberately ignore would be worse than no figure.
 read, which means correcting a food's nutrition retroactively fixes every recipe
 using it, instead of leaving stale copies behind.
 
+**Household portions are per food, and a diary entry is still grams.** Nobody
+weighs a cup of oats; they measure a cup, and the question they actually have
+is how many grams that is *for this food* — a cup of oats and a cup of milk
+weigh nothing alike. So a portion ("1 cup · 80 g") is a row on the food,
+imported from USDA's `foodPortions` where the record has them and typed in
+otherwise, and the picker offers it beside grams. What is written to the diary
+is the grams: the portion is a way of arriving at the number, not a second unit
+of storage, so nothing downstream has to know it existed.
+
+Portions sit outside the revision and verification model. They are measures of
+the food rather than claims about its nutrition — adding "1 mug · 300 g" says
+nothing about how many calories are in it — so adding one does not bump the
+revision or unsettle anyone's confirmation of the numbers, and a re-import
+refreshes the provider's portions without touching the ones a person typed in,
+on an edited food as much as an untouched one, because there is no correction
+to undo. The trade is that a portion has no history: a wrong one is a wrong
+gram figure the person sees as they pick it, and the fix is to remove it.
+
+The column list that reads a food is a small macro rather than a string, since
+a food now arrives with a JSON aggregate of its portions that has to name the
+row it belongs to, and the two statements that alias `foods` as `f` cannot
+say `foods.id`. One definition parameterised by the table name is what keeps it
+from becoming two lists again — which is how the provenance columns once broke
+two modules at runtime.
+
+**Units are a display preference; storage is metric, and food is always grams.**
+The profile carries `units`, `metric` or `imperial`, and nothing else changes:
+kilograms and centimetres go over the wire, the client converts at the edge,
+and the API never sees a pound. Body weight and height are the whole of it.
+Food amounts are deliberately not covered — "3 oz of chicken" is not how anyone
+measures food at home, and the cases people do mean, a cup or a slice, are
+household portions on the food rather than a unit switch.
+
+**Recent foods rank by recency, with frequency as the tie-break.** The list the
+picker shows before anything is typed answers "what did I have yesterday" first,
+because that is the question it is usually asked; among several things from the
+same day, the habitual one belongs first. Recipes are in the same list as foods
+because they are logged like foods, and a second endpoint the picker merged by
+hand would only invite the two to disagree. Copying a day is one
+`INSERT … SELECT`, atomic by construction, and each copy is a fresh entry rather
+than a link, since it is a new fact about a different day. Saving a meal as a
+recipe keeps a logged recipe as a sub-recipe rather than unpacking it, for the
+same reason any sub-recipe is linked and not copied.
+
+**The service worker is network-first, not stale-while-revalidate.** It keeps
+the built shell and one API response, today's diary (and the profile the app
+boots from), and answers from that cache only when the network fails. The diary
+is written to constantly and every write is followed by a re-read of the day; a
+worker that answered that re-read from cache and refreshed in the background
+would show the day as it stood before the entry just logged, every time. Writes
+are never cached, photos are never cached, and the cache key carries a digest of
+the bearer token so a second account on the same browser never sees the first
+one's day. The worker is hand-written; the only thing it cannot know until build
+time is the list of hashed files, which a dozen-line Vite plugin fills in along
+with a version derived from it, so the worker's bytes change exactly when the
+shell does.
+
 **Foods are global; recipes are private by default.** These pull in opposite
 directions deliberately. A food is a fact about a product — "oats are 379 kcal
 per 100 g" is true for everyone, so making each account re-import the same

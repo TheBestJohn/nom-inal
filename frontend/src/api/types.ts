@@ -54,8 +54,17 @@ export interface Profile {
    */
   chart_mode: ChartMode
   tracking_focus: TrackingFocus | null
+  /**
+   * How body measurements are shown and typed. The API stays metric either
+   * way: kg and cm go over the wire, and the client converts at the edge.
+   * Food amounts are grams whatever this says.
+   */
+  units: Units
   created_at: string
 }
+
+/** Display preference for body weight and height. Storage is metric. */
+export type Units = 'metric' | 'imperial'
 
 /** Nutrients a target can be set on. Mirrors the server's vocabulary. */
 export type Nutrient =
@@ -159,6 +168,19 @@ export interface Food {
   created_by: string | null
   created_at: string
   updated_at: string
+  /**
+   * Household measures — "1 cup", "1 slice" — each with its weight, offered
+   * beside grams when logging. What gets logged is still grams.
+   */
+  portions: FoodPortion[]
+}
+
+export interface FoodPortion {
+  id: string
+  label: string
+  grams: number
+  /** `usda` | `off` for a provider's measure, `user` for one typed in. */
+  source: 'usda' | 'off' | 'user' | string
 }
 
 /** How the home page plots the nutrients you follow. */
@@ -307,6 +329,8 @@ export interface ExternalFood {
   sodium_mg: number | null
   serving_size_g: number
   serving_label: string | null
+  /** Provider portions, when the record carried them. Optional on the way in. */
+  portions?: { label: string; grams: number }[]
 }
 
 export interface ExternalSearchResponse {
@@ -318,6 +342,37 @@ export interface BarcodeLookup {
   upc: string
   local: FoodDetail | null
   external: ExternalFood | null
+}
+
+/** The part of a recipe the picker needs to log it. */
+export interface RecentRecipe {
+  id: string
+  name: string
+  servings: number
+  per_serving: Nutrients
+  untracked_count: number
+}
+
+/**
+ * Something logged before, with how it was logged last time. Exactly one of
+ * `food` and `recipe` is set.
+ */
+export interface RecentItem {
+  food: Food | null
+  recipe: RecentRecipe | null
+  last_quantity_g: number | null
+  last_recipe_servings: number | null
+  last_logged_on: string
+  times_logged: number
+}
+
+export interface CopyDiaryResult {
+  from_date: string
+  to_date: string
+  meal: string | null
+  /** Zero means the source had nothing to copy. */
+  copied: number
+  entries: DiaryEntry[]
 }
 
 export interface RecipeItem {

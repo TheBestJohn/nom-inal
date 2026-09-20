@@ -7,6 +7,7 @@ import type {
   InstanceSettings,
   BarcodeLookup,
   DayCompletion,
+  CopyDiaryResult,
   DiaryDay,
   DiaryEntry,
   DiarySummary,
@@ -29,6 +30,7 @@ import type {
   ReminderStatus,
   Profile,
   Projection,
+  RecentItem,
   Recipe,
   RecipeSummary,
   RegistrationStatus,
@@ -178,6 +180,12 @@ export const api = {
   lookupBarcode: (upc: string) => request<BarcodeLookup>(`/foods/barcode/${upc}`),
   importFood: (body: ExternalFood) =>
     request<FoodDetail>('/foods/import', { method: 'POST', body }),
+  /** What you logged most recently, with the amount used last time. */
+  recentFoods: (limit = 12) => request<RecentItem[]>('/foods/recent', { query: { limit } }),
+  addPortion: (foodId: string, body: { label: string; grams: number }) =>
+    request<FoodDetail>(`/foods/${foodId}/portions`, { method: 'POST', body }),
+  removePortion: (foodId: string, portionId: string) =>
+    request<FoodDetail>(`/foods/${foodId}/portions/${portionId}`, { method: 'DELETE' }),
 
   foodRevisions: (id: string) => request<FoodRevision[]>(`/foods/${id}/revisions`),
   foodVerifications: (id: string) => request<FoodVerification[]>(`/foods/${id}/verify`),
@@ -212,6 +220,9 @@ export const api = {
   updateRecipe: (id: string, body: RecipeInput) =>
     request<Recipe>(`/recipes/${id}`, { method: 'PUT', body }),
   deleteRecipe: (id: string) => request<void>(`/recipes/${id}`, { method: 'DELETE' }),
+  /** Turn one meal of one day into a recipe, entries as logged. */
+  recipeFromMeal: (body: { date: string; meal: string; name: string; servings?: number }) =>
+    request<Recipe>('/recipes/from-meal', { method: 'POST', body }),
 
   diaryDay: (date: string) => request<DiaryDay>('/diary/day', { query: { date } }),
   diarySummary: (from: string, to: string) =>
@@ -238,4 +249,8 @@ export const api = {
   /** Where the weight trend meets the target, and what reaching it by `by` would take. */
   projection: (query: { days?: number; by?: string } = {}) =>
     request<Projection>('/estimates/projection', { query }),
+
+  /** Copy a day, or one meal of it, onto another date. */
+  copyDiary: (body: { from_date: string; to_date: string; meal?: string }) =>
+    request<CopyDiaryResult>('/diary/copy', { method: 'POST', body }),
 }

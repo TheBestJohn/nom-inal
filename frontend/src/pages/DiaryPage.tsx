@@ -1,17 +1,20 @@
 import { useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { ChevronLeft, ChevronRight, Plus, X } from 'lucide-react'
+import { BookmarkPlus, ChevronLeft, ChevronRight, Copy, Plus, X } from 'lucide-react'
 
 import { api } from '@/api/endpoints'
-import type { Food, RecipeSummary } from '@/api/types'
+import type { Food, RecentRecipe, RecipeSummary } from '@/api/types'
 import { addDays, grams, kcal, prettyDate, round, titleCase, today } from '@/lib/format'
 import { cn } from '@/lib/utils'
+import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Card, CardAction, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import {
   Dialog,
   DialogContent,
   DialogDescription,
+  DialogFooter,
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
@@ -34,10 +37,15 @@ import { withNetCarbs } from '@/lib/nutrients'
 
 const MEALS = ['breakfast', 'lunch', 'dinner', 'snack']
 
+/** A per-meal action that needs a dialog: copy it from another day, or keep it as a recipe. */
+type MealAction = { kind: 'copy' | 'recipe'; meal: string }
+
 export default function DiaryPage() {
   const { user } = useAuth()
   const [date, setDate] = useState(today())
   const [adding, setAdding] = useState<string | null>(null)
+  const [action, setAction] = useState<MealAction | null>(null)
+  const [copyNote, setCopyNote] = useState<string | null>(null)
   const queryClient = useQueryClient()
 
   const day = useQuery({ queryKey: ['diary', 'day', date], queryFn: () => api.diaryDay(date) })
@@ -59,8 +67,25 @@ export default function DiaryPage() {
     },
   })
 
+  // The whole of yesterday onto an empty day. Offered only when the day is
+  // empty, because on a day with entries it would double up rather than fill
+  // in, and a per-meal copy covers the rest.
+  const copyYesterday = useMutation({
+    mutationFn: () => api.copyDiary({ from_date: addDays(date, -1), to_date: date }),
+    onSuccess: (result) => {
+      queryClient.invalidateQueries({ queryKey: ['diary'] })
+      queryClient.invalidateQueries({ queryKey: ['foods', 'recent'] })
+      setCopyNote(
+        result.copied === 0
+          ? `Nothing was logged on ${prettyDate(result.from_date).toLowerCase()} to copy.`
+          : null,
+      )
+    },
+  })
+
   const calorieStatus = day.data?.targets.find((t) => t.nutrient === 'calories_kcal')
   const meals = day.data?.meals ?? MEALS.map((meal) => ({ meal, entries: [], total: null }))
+  const dayIsEmpty = day.data !== undefined && day.data.meals.every((m) => m.entries.length === 0)
 
   return (
     <div className="space-y-4">
@@ -140,6 +165,23 @@ export default function DiaryPage() {
             </div>
             <EnergyShareRow share={day.data.energy_share} />
             <TargetList targets={day.data.targets} />
+            {dayIsEmpty && (
+              <Alert>
+                <AlertDescription className="w-full space-y-2">
+                  <p>Nothing logged yet. Most days look like the one before.</p>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={copyYesterday.isPending}
+                    onClick={() => copyYesterday.mutate()}
+                  >
+                    <Copy /> {copyYesterday.isPending ? 'Copying…' : 'Copy yesterday'}
+                  </Button>
+                  {copyNote && <p className="text-muted-foreground text-xs">{copyNote}</p>}
+                </AlertDescription>
+              </Alert>
+            )}
+            <ErrorNote error={copyYesterday.error} />
           </CardContent>
         </Card>
       )}
@@ -148,7 +190,30 @@ export default function DiaryPage() {
         <Card key={group.meal}>
           <CardHeader>
             <CardTitle>{titleCase(group.meal)}</CardTitle>
-            <CardAction>
+            <CardAction className="flex items-center gap-1">
+              {/* A meal with entries can be kept as a recipe; any meal can be
+                  filled from another day. Icons with names, so the row stays
+                  one line on a phone. */}
+              {group.entries.length > 0 && (
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  aria-label={`Save ${group.meal} as a recipe`}
+                  title="Save as recipe"
+                  onClick={() => setAction({ kind: 'recipe', meal: group.meal })}
+                >
+                  <BookmarkPlus />
+                </Button>
+              )}
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                aria-label={`Copy ${group.meal} from another day`}
+                title="Copy from…"
+                onClick={() => setAction({ kind: 'copy', meal: group.meal })}
+              >
+                <Copy />
+              </Button>
               <Button variant="outline" size="sm" onClick={() => setAdding(group.meal)}>
                 <Plus /> Add
               </Button>
@@ -211,17 +276,170 @@ export default function DiaryPage() {
           {adding && <AddEntry meal={adding} date={date} onDone={() => setAdding(null)} />}
         </DialogContent>
       </Dialog>
+
+      <Dialog open={action !== null} onOpenChange={(open) => !open && setAction(null)}>
+        <DialogContent>
+          {action?.kind === 'copy' && (
+            <CopyMeal meal={action.meal} date={date} onDone={() => setAction(null)} />
+          )}
+          {action?.kind === 'recipe' && (
+            <SaveMealAsRecipe meal={action.meal} date={date} onDone={() => setAction(null)} />
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }
 
+/** Fill one meal from the same meal on another day. */
+function CopyMeal({ meal, date, onDone }: { meal: string; date: string; onDone: () => void }) {
+  const [from, setFrom] = useState(addDays(date, -1))
+  const [note, setNote] = useState<string | null>(null)
+  const queryClient = useQueryClient()
+
+  const copy = useMutation({
+    mutationFn: () => api.copyDiary({ from_date: from, to_date: date, meal }),
+    onSuccess: (result) => {
+      queryClient.invalidateQueries({ queryKey: ['diary'] })
+      queryClient.invalidateQueries({ queryKey: ['foods', 'recent'] })
+      if (result.copied === 0) {
+        setNote(`No ${meal} was logged on ${prettyDate(from).toLowerCase()}.`)
+      } else {
+        onDone()
+      }
+    },
+  })
+
+  return (
+    <>
+      <DialogHeader>
+        <DialogTitle>Copy {meal} from another day</DialogTitle>
+        <DialogDescription>
+          The same things in the same amounts, added to {meal} on {prettyDate(date).toLowerCase()}.
+          Nothing already there is touched.
+        </DialogDescription>
+      </DialogHeader>
+      <div className="space-y-1.5">
+        <Label htmlFor="copy-from">Copy from</Label>
+        <Input
+          id="copy-from"
+          type="date"
+          value={from}
+          max={today()}
+          onChange={(e) => {
+            setFrom(e.target.value || addDays(date, -1))
+            setNote(null)
+          }}
+        />
+      </div>
+      {note && <p className="text-muted-foreground text-sm">{note}</p>}
+      <ErrorNote error={copy.error} />
+      <DialogFooter>
+        <Button variant="outline" onClick={onDone}>
+          Cancel
+        </Button>
+        <Button disabled={copy.isPending || from === date} onClick={() => copy.mutate()}>
+          <Copy /> {copy.isPending ? 'Copying…' : 'Copy'}
+        </Button>
+      </DialogFooter>
+    </>
+  )
+}
+
+/** Keep a logged meal as a recipe, entries as they were logged. */
+function SaveMealAsRecipe({
+  meal,
+  date,
+  onDone,
+}: {
+  meal: string
+  date: string
+  onDone: () => void
+}) {
+  const navigate = useNavigate()
+  const queryClient = useQueryClient()
+  const [name, setName] = useState(`${titleCase(meal)}, ${prettyDate(date)}`)
+  const [servings, setServings] = useState('1')
+
+  const save = useMutation({
+    mutationFn: () =>
+      api.recipeFromMeal({ date, meal, name: name.trim(), servings: Number(servings) || 1 }),
+    onSuccess: (recipe) => {
+      queryClient.invalidateQueries({ queryKey: ['recipes'] })
+      onDone()
+      navigate(`/recipes/${recipe.id}`)
+    },
+  })
+
+  return (
+    <>
+      <DialogHeader>
+        <DialogTitle>Save {meal} as a recipe</DialogTitle>
+        <DialogDescription>
+          Everything logged for {meal} on {prettyDate(date).toLowerCase()} becomes the ingredient
+          list, in the amounts you logged. A recipe you logged stays a recipe inside it.
+        </DialogDescription>
+      </DialogHeader>
+      <div className="grid gap-3 sm:grid-cols-[1fr_7rem]">
+        <div className="space-y-1.5">
+          <Label htmlFor="meal-recipe-name">Name</Label>
+          <Input
+            id="meal-recipe-name"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            autoFocus
+          />
+        </div>
+        <div className="space-y-1.5">
+          <Label htmlFor="meal-recipe-servings">Servings</Label>
+          <Input
+            id="meal-recipe-servings"
+            type="number"
+            min={0.1}
+            step="any"
+            value={servings}
+            onChange={(e) => setServings(e.target.value)}
+          />
+        </div>
+      </div>
+      <p className="text-muted-foreground text-xs">
+        Servings is how many the meal was: 1 if you ate all of it.
+      </p>
+      <ErrorNote error={save.error} />
+      <DialogFooter>
+        <Button variant="outline" onClick={onDone}>
+          Cancel
+        </Button>
+        <Button disabled={save.isPending || !name.trim()} onClick={() => save.mutate()}>
+          <BookmarkPlus /> {save.isPending ? 'Saving…' : 'Save recipe'}
+        </Button>
+      </DialogFooter>
+    </>
+  )
+}
+
+/** What the recipe tab needs of a recipe, met by a summary and by a recent item alike. */
+type PickedRecipe = Pick<RecipeSummary, 'id' | 'name' | 'per_serving'>
+
 function AddEntry({ meal, date, onDone }: { meal: string; date: string; onDone: () => void }) {
   const [mode, setMode] = useState<'food' | 'recipe'>('food')
   const [picked, setPicked] = useState<Food | null>(null)
-  const [pickedRecipe, setPickedRecipe] = useState<RecipeSummary | null>(null)
+  const [pickedRecipe, setPickedRecipe] = useState<PickedRecipe | null>(null)
   const [amount, setAmount] = useState('100')
   const [servings, setServings] = useState('1')
   const queryClient = useQueryClient()
+
+  // From the picker's recent list: the amount used last time comes with the
+  // pick, so logging the usual is two taps rather than a search and a number.
+  const pickFood = (food: Food, lastGrams?: number) => {
+    setPicked(food)
+    if (lastGrams) setAmount(String(round(lastGrams, 1)))
+  }
+  const pickRecipe = (recipe: RecentRecipe, lastServings: number) => {
+    setMode('recipe')
+    setPickedRecipe(recipe)
+    setServings(String(round(lastServings, 2)))
+  }
 
   const recipes = useQuery({
     queryKey: ['recipes', 'all'],
@@ -246,6 +464,7 @@ function AddEntry({ meal, date, onDone }: { meal: string; date: string; onDone: 
           }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['diary'] })
+      queryClient.invalidateQueries({ queryKey: ['foods', 'recent'] })
       onDone()
     },
   })
@@ -325,6 +544,11 @@ function AddEntry({ meal, date, onDone }: { meal: string; date: string; onDone: 
                 />
               </div>
 
+              {/* Ways of arriving at a gram figure. A household portion is
+                  "1 cup · 240 g": what gets stored is the 240, the same as
+                  if it had been typed. Amounts are never in ounces — that
+                  is not how anyone measures food, and the cases people
+                  mean are exactly these portions. */}
               <div className="flex flex-wrap gap-2">
                 <Button
                   variant="outline"
@@ -334,6 +558,16 @@ function AddEntry({ meal, date, onDone }: { meal: string; date: string; onDone: 
                   1 serving ({grams(picked.serving_size_g, 0)}
                   {picked.serving_label ? ` · ${picked.serving_label}` : ''})
                 </Button>
+                {picked.portions.map((portion) => (
+                  <Button
+                    key={portion.id}
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setAmount(String(portion.grams))}
+                  >
+                    {portion.label} · {grams(portion.grams, 0)}
+                  </Button>
+                ))}
                 <Button variant="outline" size="sm" onClick={() => setAmount('100')}>
                   100 g
                 </Button>
@@ -350,7 +584,7 @@ function AddEntry({ meal, date, onDone }: { meal: string; date: string; onDone: 
               </Button>
             </div>
           ) : (
-            <FoodPicker onPick={setPicked} />
+            <FoodPicker onPick={pickFood} onPickRecipe={pickRecipe} />
           )}
         </TabsContent>
 

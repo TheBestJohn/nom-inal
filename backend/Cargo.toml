@@ -19,6 +19,9 @@ sqlx = { version = "0.8", default-features = false, features = [
   "chrono",
   "macros",
   "migrate",
+  # `Food.portions` is a JSON aggregate decoded straight into a Vec, so the
+  # food arrives whole from one row.
+  "json",
 ] }
 
 serde = { version = "1", features = ["derive"] }

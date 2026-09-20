@@ -135,6 +135,26 @@ pub struct PatchDiaryEntryRequest {
     pub recipe_servings: Option<f64>,
 }
 
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct CopyDiaryRequest {
+    pub from_date: NaiveDate,
+    pub to_date: NaiveDate,
+    /// Copy only this meal. Omitted, the whole day is copied, meal by meal.
+    pub meal: Option<String>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct CopyDiaryResult {
+    pub from_date: NaiveDate,
+    pub to_date: NaiveDate,
+    pub meal: Option<String>,
+    /// How many entries were created. Zero means the source had nothing to
+    /// copy, which is an answer rather than an error.
+    pub copied: usize,
+    /// The new entries, as `GET /diary/{id}` would return each.
+    pub entries: Vec<DiaryEntry>,
+}
+
 #[derive(Debug, Serialize, ToSchema)]
 pub struct MealGroup {
     pub meal: String,
