@@ -19,3 +19,6 @@ node_modules/
 .DS_Store
 .idea/
 .vscode/
+
+# Agent worktrees are scratch checkouts, not project files.
+.claude/worktrees/
