@@ -330,6 +330,96 @@ expect "patch recipe servings rescales" \
 status "reject both food_id and recipe_id" 400 -X POST "$BASE/diary" -H "$AUTH" -H 'content-type: application/json' -d "{\"food_id\":\"$BAN\",\"recipe_id\":\"$RID\",\"quantity_g\":10}"
 status "reject neither food_id nor recipe_id" 400 -X POST "$BASE/diary" -H "$AUTH" -H 'content-type: application/json' -d '{"quantity_g":10}'
 
+echo "== tracking focus"
+# Why you are tracking. NULL until the welcome flow has asked, which is what
+# sends an account through it once; 'custom' is the answer "none of these".
+expect "focus starts unanswered" "$(curl -fsS "$BASE/profile" -H "$AUTH" | j "['tracking_focus']")" "None"
+# Every wire name is also the column's CHECK list, so each one is written and
+# read back: a serde rename that drifted from the constraint would 500 here.
+for F in general weight_loss muscle_gain keto diabetes blood_pressure heart_health custom; do
+  expect "focus '$F' round-trips" \
+    "$(curl -fsS -X PATCH "$BASE/profile" -H "$AUTH" -H 'content-type: application/json' \
+        -d "{\"tracking_focus\":\"$F\"}" | j "['tracking_focus']")" "$F"
+done
+status "an unknown focus is refused" 400 -X PATCH "$BASE/profile" -H "$AUTH" -H 'content-type: application/json' -d '{"tracking_focus":"paleo"}'
+status "and on the preview"          400 "$BASE/profile/focus/preview?focus=paleo" -H "$AUTH"
+expect "eight focuses are offered, with a sentence each" \
+  "$(curl -fsS "$BASE/profile/focus" -H "$AUTH" | j " and [len(d), all(o['summary'] for o in d)]")" "[8, True]"
+
+# The estimate lives on the server now. Nothing is guessed: with no birth date
+# it says what it needs, and every target that depends on it is listed without
+# an amount rather than dropped.
+expect "the suggestion names what it is missing" \
+  "$(curl -fsS "$BASE/targets/suggestion" -H "$AUTH" | j "['missing']")" "['birth_date']"
+expect "and prices only what it can" \
+  "$(curl -fsS "$BASE/profile/focus/preview?focus=keto" -H "$AUTH" \
+    | j " and [(t['nutrient'], t['amount'] is not None) for t in d['targets']]")" \
+  "[('calories_kcal', False), ('net_carbs_g', True), ('protein_g', True), ('fat_g', False)]"
+
+curl -fsS -X PATCH "$BASE/profile" -H "$AUTH" -H 'content-type: application/json' \
+  -d '{"sex":"male","birth_date":"1990-06-15","activity_level":"moderate","goal":"maintain"}' >/dev/null
+SUG=$(curl -fsS "$BASE/targets/suggestion" -H "$AUTH")
+# The latest weigh-in (84.0 kg, from the weights section) is the body weight,
+# not the 78 kg target: the two used to disagree between the settings page
+# and the presets.
+expect "the estimate reads the scale, not the target" "$(echo "$SUG" | j "['estimate']['weight_kg']")" "84.0"
+expect "Mifflin-St Jeor, scaled by activity" \
+  "$(echo "$SUG" | j " and round(d['estimate']['bmr_kcal'] * 1.55) == d['estimate']['tdee_kcal']")" "True"
+expect "the calorie budget is the estimate to the nearest ten" \
+  "$(echo "$SUG" | j " and [t for t in d['targets'] if t['nutrient']=='calories_kcal'][0]['amount'] == round(d['estimate']['calories_kcal'] / 10) * 10")" "True"
+expect "protein by body weight (1.6 g/kg when maintaining)" \
+  "$(echo "$SUG" | j " and [t for t in d['targets'] if t['nutrient']=='protein_g'][0]['amount']")" "134.0"
+
+# A preset is applied, not enforced: it writes ordinary targets and display
+# preferences, all in one transaction, and every one of them stays editable.
+KETO=$(curl -fsS "$BASE/profile/focus/preview?focus=keto" -H "$AUTH")
+expect "keto budgets net carbs" \
+  "$(echo "$KETO" | j " and [(t['nutrient'], t['kind'], t['amount']) for t in d['targets'] if t['nutrient'] in ('net_carbs_g','protein_g')]")" \
+  "[('net_carbs_g', 'budget', 25.0), ('protein_g', 'goal', 126.0)]"
+expect "and fat is what remains, as a goal" \
+  "$(echo "$KETO" | j " and (lambda t: (t['fat_g']['kind'], t['fat_g']['amount'] == round((t['calories_kcal']['amount'] - 25*4 - 126*4) / 9)))({x['nutrient']: x for x in d['targets']})")" \
+  "('goal', True)"
+expect "every target says why" "$(echo "$KETO" | j " and all(t['rationale'] for t in d['targets'])")" "True"
+
+APPLIED=$(curl -fsS -X POST "$BASE/profile/focus" -H "$AUTH" -H 'content-type: application/json' -d '{"focus":"keto","apply":true}')
+expect "applying sets the focus"     "$(echo "$APPLIED" | j "['profile']['tracking_focus']")" "keto"
+expect "and the readouts"            "$(echo "$APPLIED" | j "['profile']['shown_nutrients']")" "['calories_kcal', 'protein_g', 'net_carbs_g', 'fat_g']"
+expect "and the chart"               "$(echo "$APPLIED" | j "['profile']['chart_nutrients']")" "['net_carbs_g']"
+expect "and writes the targets"      "$(curl -fsS "$BASE/targets" -H "$AUTH" | j " and [(t['nutrient'], t['amount']) for t in d]")" \
+  "[('calories_kcal', $(echo "$KETO" | j " and [t for t in d['targets'] if t['nutrient']=='calories_kcal'][0]['amount']")), ('protein_g', 126.0), ('net_carbs_g', 25.0), ('fat_g', $(echo "$KETO" | j " and [t for t in d['targets'] if t['nutrient']=='fat_g'][0]['amount']"))]"
+expect "a written target reads back like any other" "$(curl -fsS "$BASE/targets/net_carbs_g" -H "$AUTH" | j "['kind']")" "budget"
+expect "weight loss implies a cut" \
+  "$(curl -fsS "$BASE/profile/focus/preview?focus=weight_loss" -H "$AUTH" | j " and (d['goal'], d['estimate']['goal_adjustment_kcal'])")" "('cut', -500.0)"
+# Recording the answer without applying it changes nothing else.
+curl -fsS -X POST "$BASE/profile/focus" -H "$AUTH" -H 'content-type: application/json' -d '{"focus":"blood_pressure","apply":false}' >/dev/null
+expect "without apply, only the focus moves" "$(curl -fsS "$BASE/profile" -H "$AUTH" | j " and (d['tracking_focus'], d['chart_nutrients'])")" "('blood_pressure', ['net_carbs_g'])"
+expect "and the targets stay"                "$(curl -fsS "$BASE/targets" -H "$AUTH" | j ".__len__()")" "4"
+expect "custom applies nothing"              "$(curl -fsS -X POST "$BASE/profile/focus" -H "$AUTH" -H 'content-type: application/json' -d '{"focus":"custom","apply":true}' | j " and (d['profile']['tracking_focus'], d['applied']['targets'], d['profile']['chart_nutrients'])")" "('custom', [], ['net_carbs_g'])"
+expect "so the keto targets survive it"      "$(curl -fsS "$BASE/targets" -H "$AUTH" | j ".__len__()")" "4"
+
+# Derived nutrients are computed where the total is serialised, so every
+# payload agrees: a food, a recipe, an entry, a meal, a day, an average.
+DAY=$(curl -fsS "$BASE/diary/day?date=2026-01-15" -H "$AUTH")
+expect "net carbs are carbs minus fibre" \
+  "$(echo "$DAY" | j " and round(d['total']['carbs_g'] - d['total']['fiber_g'], 2) == d['total']['net_carbs_g'] and d['total']['net_carbs_g'] > 0")" "True"
+expect "on the food too" \
+  "$(curl -fsS "$BASE/foods/$OATS" -H "$AUTH" | j " and d['per_serving']['net_carbs_g'] == round(d['per_serving']['carbs_g'] - d['per_serving']['fiber_g'], 2)")" "True"
+expect "a net-carbs target reports progress against it" \
+  "$(echo "$DAY" | j " and (lambda t: (t['consumed'] == d['total']['net_carbs_g'], t['status']))([t for t in d['targets'] if t['nutrient']=='net_carbs_g'][0])")" "(True, 'over')"
+expect "each meal carries its own total" \
+  "$(echo "$DAY" | j " and [(m['meal'], m['total']['net_carbs_g'] == round(sum(e['nutrients']['net_carbs_g'] for e in m['entries']), 2)) for m in d['meals'] if m['entries']]")" \
+  "[('breakfast', True), ('lunch', True)]"
+expect "energy share sums to 100" \
+  "$(echo "$DAY" | j " and abs(d['energy_share']['protein_pct'] + d['energy_share']['carbs_pct'] + d['energy_share']['fat_pct'] - 100) < 0.2")" "True"
+expect "and so does the average's" \
+  "$(curl -fsS "$BASE/diary/summary?from=2026-01-01&to=2026-01-31" -H "$AUTH" | j " and abs(sum(d['energy_share'].values()) - 100) < 0.2")" "True"
+expect "an empty day shares nothing, not NaN" \
+  "$(curl -fsS "$BASE/diary/day?date=2025-06-30" -H "$AUTH" | j "['energy_share']")" "{'protein_pct': 0.0, 'carbs_pct': 0.0, 'fat_pct': 0.0}"
+
+# Put the display back so the rest of the run sees the usual readout.
+curl -fsS -X PATCH "$BASE/profile" -H "$AUTH" -H 'content-type: application/json' \
+  -d '{"shown_nutrients":["calories_kcal","protein_g","carbs_g","fat_g"],"chart_nutrients":["calories_kcal"]}' >/dev/null
+
 echo "== global foods and recipe visibility"
 # A second account, to check what crosses the boundary between users.
 OTHER_EMAIL="smoke-other-$(date +%s)-$RANDOM@example.test"
@@ -798,7 +888,7 @@ status "recipe in use cannot be deleted" 400 -X DELETE "$BASE/recipes/$RID" -H "
 
 echo "== openapi"
 PATHS=$(curl -fsS "${BASE%/api/v1}/api/v1/openapi.json" | j " and len(d['paths'])")
-if [ "$PATHS" -ge 38 ]; then pass "spec documents $PATHS paths"; else fail "spec only documents $PATHS paths"; fi
+if [ "$PATHS" -ge 42 ]; then pass "spec documents $PATHS paths"; else fail "spec only documents $PATHS paths"; fi
 
 echo
 if [ "$failures" -eq 0 ]; then

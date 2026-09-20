@@ -51,6 +51,15 @@ export const NUTRIENTS: NutrientMeta[] = [
     defaultKind: 'budget',
   },
   {
+    key: 'net_carbs_g',
+    label: 'Net carbs',
+    short: 'Net C',
+    unit: 'g',
+    color: 'var(--netcarbs)',
+    defaultKind: 'budget',
+    hint: 'carbs − fiber',
+  },
+  {
     key: 'fat_g',
     label: 'Fat',
     short: 'F',
@@ -107,6 +116,20 @@ export const nutrientMeta = (key: Nutrient) => BY_KEY.get(key)
  */
 export const orderNutrients = (chosen: Nutrient[]): NutrientMeta[] =>
   NUTRIENTS.filter((n) => chosen.includes(n.key))
+
+/**
+ * Complete a total the client has assembled itself.
+ *
+ * The server derives net carbs at the one place a total is serialised, so a
+ * food, a recipe and a day cannot disagree about it. The few previews the
+ * client computes before anything is saved — grams of a food in the picker,
+ * a recipe being edited — derive it here, the same way, rather than each
+ * carrying its own subtraction.
+ */
+export const withNetCarbs = (n: Omit<Nutrients, 'net_carbs_g'>): Nutrients => ({
+  ...n,
+  net_carbs_g: Math.max(0, n.carbs_g - n.fiber_g),
+})
 
 /** Read one nutrient out of a totals object by key. */
 export const nutrientValue = (n: Nutrients, key: Nutrient): number => n[key] ?? 0

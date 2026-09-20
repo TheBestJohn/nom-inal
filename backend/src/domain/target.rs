@@ -46,6 +46,10 @@ pub enum Nutrient {
     CaloriesKcal,
     ProteinG,
     CarbsG,
+    /// Carbohydrate minus fibre. Derived from the two figures beside it and
+    /// never stored, so a target on it is evaluated against exactly the net
+    /// carbs the readouts show.
+    NetCarbsG,
     FatG,
     FiberG,
     SugarG,
@@ -66,10 +70,11 @@ pub const DEFAULT_SHOWN_NUTRIENTS: [Nutrient; 4] = [
 /// What the home page plots by default — one line, as it always has.
 pub const DEFAULT_CHART_NUTRIENTS: [Nutrient; 1] = [Nutrient::CaloriesKcal];
 
-pub const ALL_NUTRIENTS: [Nutrient; 8] = [
+pub const ALL_NUTRIENTS: [Nutrient; 9] = [
     Nutrient::CaloriesKcal,
     Nutrient::ProteinG,
     Nutrient::CarbsG,
+    Nutrient::NetCarbsG,
     Nutrient::FatG,
     Nutrient::FiberG,
     Nutrient::SugarG,
@@ -83,6 +88,7 @@ impl Nutrient {
             Self::CaloriesKcal => "calories_kcal",
             Self::ProteinG => "protein_g",
             Self::CarbsG => "carbs_g",
+            Self::NetCarbsG => "net_carbs_g",
             Self::FatG => "fat_g",
             Self::FiberG => "fiber_g",
             Self::SugarG => "sugar_g",
@@ -100,6 +106,7 @@ impl Nutrient {
             Self::CaloriesKcal => "Calories",
             Self::ProteinG => "Protein",
             Self::CarbsG => "Carbs",
+            Self::NetCarbsG => "Net carbs",
             Self::FatG => "Fat",
             Self::FiberG => "Fiber",
             Self::SugarG => "Sugar",
@@ -133,6 +140,7 @@ impl Nutrient {
             Self::CaloriesKcal => n.calories_kcal,
             Self::ProteinG => n.protein_g,
             Self::CarbsG => n.carbs_g,
+            Self::NetCarbsG => n.net_carbs_g(),
             Self::FatG => n.fat_g,
             Self::FiberG => n.fiber_g,
             Self::SugarG => n.sugar_g,
@@ -164,7 +172,7 @@ pub struct TargetInput {
 #[derive(Debug, Deserialize, Validate, ToSchema)]
 pub struct ReplaceTargetsRequest {
     #[validate(nested)]
-    #[validate(length(max = 8, message = "may contain at most one entry per nutrient"))]
+    #[validate(length(max = 9, message = "may contain at most one entry per nutrient"))]
     pub targets: Vec<TargetInput>,
 }
 
@@ -290,6 +298,21 @@ mod tests {
         assert_eq!(Nutrient::FiberG.default_kind(), TargetKind::Goal);
         assert_eq!(Nutrient::CaloriesKcal.default_kind(), TargetKind::Budget);
         assert_eq!(Nutrient::SodiumMg.default_kind(), TargetKind::Budget);
+    }
+
+    /// A net-carbs target is measured against the derived figure, so it
+    /// agrees with what every readout shows for the same day.
+    #[test]
+    fn a_net_carbs_budget_reads_the_derived_figure() {
+        let day = Nutrients {
+            carbs_g: 40.0,
+            fiber_g: 15.0,
+            ..Nutrients::default()
+        };
+        let t = TargetProgress::evaluate(Nutrient::NetCarbsG, 25.0, TargetKind::Budget, &day);
+        assert_eq!(t.consumed, 25.0);
+        assert_eq!(t.status, "under");
+        assert_eq!(t.unit, "g");
     }
 
     #[test]

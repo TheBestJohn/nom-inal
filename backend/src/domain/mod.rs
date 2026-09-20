@@ -1,5 +1,7 @@
 pub mod api_key;
 pub mod diary;
+pub mod energy;
+pub mod focus;
 pub mod food;
 pub mod nutrients;
 pub mod photo;

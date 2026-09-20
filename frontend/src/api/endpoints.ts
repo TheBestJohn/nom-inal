@@ -12,6 +12,8 @@ import type {
   ExternalFood,
   ExternalSearchResponse,
   CreatedApiKey,
+  FocusOption,
+  FocusPreview,
   Food,
   FoodDetail,
   FoodRevision,
@@ -28,6 +30,9 @@ import type {
   Recipe,
   RecipeSummary,
   RegistrationStatus,
+  SetFocusResponse,
+  TargetSuggestion,
+  TrackingFocus,
   WeightEntry,
   TargetKind,
   Verdict,
@@ -120,7 +125,15 @@ export const api = {
   updateProfile: (body: Partial<Profile>) =>
     request<Profile>('/profile', { method: 'PATCH', body }),
 
+  focusOptions: () => request<FocusOption[]>('/profile/focus'),
+  focusPreview: (focus: TrackingFocus) =>
+    request<FocusPreview>('/profile/focus/preview', { query: { focus } }),
+  /** Records the answer; with `apply`, also writes the preset's targets and display. */
+  setFocus: (body: { focus: TrackingFocus; apply: boolean }) =>
+    request<SetFocusResponse>('/profile/focus', { method: 'POST', body }),
+
   listTargets: () => request<NutritionTarget[]>('/targets'),
+  targetSuggestion: () => request<TargetSuggestion>('/targets/suggestion'),
   replaceTargets: (targets: TargetInput[]) =>
     request<NutritionTarget[]>('/targets', { method: 'PUT', body: { targets } }),
   deleteTarget: (nutrient: Nutrient) => request<void>(`/targets/${nutrient}`, { method: 'DELETE' }),

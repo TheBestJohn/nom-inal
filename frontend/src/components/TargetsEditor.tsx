@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { X } from 'lucide-react'
 
@@ -41,20 +42,19 @@ type Rows = Record<Nutrient, Row>
 const blankRows = (): Rows =>
   Object.fromEntries(NUTRIENTS.map((n) => [n.key, { amount: '', kind: n.defaultKind }])) as Rows
 
-export interface Suggestion {
-  calories: number
-  protein: number
-  carbs: number
-  fat: number
-  fiber: number
-}
-
-export default function TargetsEditor({ suggestion }: { suggestion: Suggestion | null }) {
+export default function TargetsEditor() {
   const queryClient = useQueryClient()
   const [rows, setRows] = useState<Rows>(blankRows)
   const [saved, setSaved] = useState(false)
 
   const targets = useQuery({ queryKey: ['targets'], queryFn: () => api.listTargets() })
+  // The estimate is made on the server now, from the same inputs and the same
+  // arithmetic the focus presets use, so what is suggested here is exactly
+  // what the general preset would write.
+  const suggestion = useQuery({
+    queryKey: ['targets', 'suggestion'],
+    queryFn: () => api.targetSuggestion(),
+  })
 
   useEffect(() => {
     if (!targets.data) return
@@ -87,16 +87,14 @@ export default function TargetsEditor({ suggestion }: { suggestion: Suggestion |
   const set = (key: Nutrient, patch: Partial<Row>) =>
     setRows((r) => ({ ...r, [key]: { ...r[key], ...patch } }))
 
+  const priced = (suggestion.data?.targets ?? []).filter((t) => t.amount !== null)
+
   const applySuggestion = () => {
-    if (!suggestion) return
-    setRows((r) => ({
-      ...r,
-      calories_kcal: { amount: String(suggestion.calories), kind: 'budget' },
-      protein_g: { amount: String(suggestion.protein), kind: 'goal' },
-      carbs_g: { amount: String(suggestion.carbs), kind: 'budget' },
-      fat_g: { amount: String(suggestion.fat), kind: 'budget' },
-      fiber_g: { amount: String(suggestion.fiber), kind: 'goal' },
-    }))
+    setRows((r) => {
+      const next = { ...r }
+      for (const t of priced) next[t.nutrient] = { amount: String(t.amount), kind: t.kind }
+      return next
+    })
   }
 
   const activeCount = NUTRIENTS.filter((n) => Number(rows[n.key].amount) > 0).length
@@ -119,19 +117,20 @@ export default function TargetsEditor({ suggestion }: { suggestion: Suggestion |
       </CardHeader>
 
       <CardContent className="space-y-4">
-        {suggestion && (
+        {suggestion.data && priced.length > 0 && (
           <Alert variant="success">
             <AlertDescription className="w-full">
               <div className="flex w-full flex-wrap items-center justify-between gap-3">
                 <div>
                   <p>
-                    <strong>Suggested:</strong> {suggestion.calories} kcal budget ·{' '}
-                    {suggestion.protein} g protein goal · {suggestion.carbs} g carbs ·{' '}
-                    {suggestion.fat} g fat · {suggestion.fiber} g fiber
+                    <strong>Suggested:</strong>{' '}
+                    {priced
+                      .map((t) => `${t.amount} ${t.unit} ${t.label.toLowerCase()} ${t.kind}`)
+                      .join(' · ')}
                   </p>
                   <p className="text-muted-foreground text-xs">
-                    Mifflin-St Jeor BMR × activity, adjusted for your goal. An estimate — adjust to
-                    what the scale actually does.
+                    Mifflin-St Jeor resting rate × activity, adjusted for your goal. An estimate —
+                    adjust to what the scale actually does.
                   </p>
                 </div>
                 <Button variant="outline" size="sm" onClick={applySuggestion}>
@@ -140,6 +139,25 @@ export default function TargetsEditor({ suggestion }: { suggestion: Suggestion |
               </div>
             </AlertDescription>
           </Alert>
+        )}
+        {suggestion.data && suggestion.data.missing.length > 0 && (
+          <p className="text-muted-foreground text-xs">
+            No suggestion yet: the estimate needs{' '}
+            {suggestion.data.missing
+              .map((f) =>
+                f === 'weight'
+                  ? 'a weigh-in'
+                  : f === 'height_cm'
+                    ? 'your height'
+                    : 'your date of birth',
+              )
+              .join(', ')}
+            .{' '}
+            <Link to="/settings/body" className="text-primary underline underline-offset-4">
+              Add them under Body
+            </Link>
+            .
+          </p>
         )}
 
         <div className="divide-y">

@@ -2,11 +2,17 @@ use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::routing::get;
 use axum::Router;
+use chrono::{NaiveDate, Utc};
+use serde::Serialize;
+use utoipa::ToSchema;
 use uuid::Uuid;
 use validator::Validate;
 
 use crate::auth::CurrentUser;
+use crate::domain::energy::{EnergyEstimate, EnergyInputs};
+use crate::domain::focus::{self, PreviewTarget};
 use crate::domain::target::{Nutrient, NutritionTarget, ReplaceTargetsRequest, TargetKind};
+use crate::domain::user::TrackingFocus;
 use crate::error::{ApiError, ApiResult};
 use crate::extract::Json;
 use crate::state::AppState;
@@ -14,7 +20,85 @@ use crate::state::AppState;
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/", get(list).put(replace))
+        // Before `/{nutrient}`, or "suggestion" would be parsed as one.
+        .route("/suggestion", get(suggestion))
         .route("/{nutrient}", get(get_one).delete(delete))
+}
+
+/// What the estimate needs, read from the profile and the latest weigh-in.
+///
+/// Shared by the suggestion and the focus preview so both price a target
+/// from the same body weight — the settings page used to read the scale and
+/// the presets the target weight, which is two answers to one question.
+pub async fn energy_inputs(state: &AppState, user_id: Uuid) -> ApiResult<EnergyInputs> {
+    let profile: (
+        Option<String>,
+        Option<NaiveDate>,
+        Option<f64>,
+        String,
+        String,
+        Option<f64>,
+    ) = sqlx::query_as(
+        "SELECT sex, birth_date, height_cm, activity_level, goal, target_weight_kg
+         FROM users WHERE id = $1",
+    )
+    .bind(user_id)
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or(ApiError::NotFound("user"))?;
+    let (sex, birth_date, height_cm, activity_level, goal, target_weight_kg) = profile;
+
+    let latest: Option<(f64,)> = sqlx::query_as(
+        "SELECT weight_kg FROM weight_entries WHERE user_id = $1
+         ORDER BY recorded_on DESC LIMIT 1",
+    )
+    .bind(user_id)
+    .fetch_optional(&state.db)
+    .await?;
+
+    let (weight_kg, weight_source) = match (latest, target_weight_kg) {
+        (Some((w,)), _) => (Some(w), Some("weigh_in")),
+        (None, Some(w)) => (Some(w), Some("target_weight")),
+        (None, None) => (None, None),
+    };
+
+    Ok(EnergyInputs {
+        sex,
+        birth_date,
+        height_cm,
+        weight_kg,
+        weight_source,
+        activity_level,
+        goal,
+    })
+}
+
+/// The estimate and the targets it suggests: the general preset, which is
+/// what the Settings page has always offered under "Suggested".
+#[derive(Debug, Serialize, ToSchema)]
+pub struct TargetSuggestion {
+    /// Absent when the profile is missing something; `missing` says what.
+    pub estimate: Option<EnergyEstimate>,
+    pub missing: Vec<&'static str>,
+    pub targets: Vec<PreviewTarget>,
+}
+
+#[utoipa::path(
+    get, path = "/api/v1/targets/suggestion", tag = "targets",
+    security(("bearer" = [])),
+    responses((status = 200, description = "Energy estimate and suggested targets", body = TargetSuggestion))
+)]
+pub async fn suggestion(
+    State(state): State<AppState>,
+    user: CurrentUser,
+) -> ApiResult<Json<TargetSuggestion>> {
+    let inputs = energy_inputs(&state, user.id).await?;
+    let preview = focus::preview(TrackingFocus::General, &inputs, Utc::now().date_naive());
+    Ok(Json(TargetSuggestion {
+        estimate: preview.estimate,
+        missing: preview.missing,
+        targets: preview.targets,
+    }))
 }
 
 #[utoipa::path(

@@ -11,7 +11,7 @@ use super::target::{Nutrient, DEFAULT_CHART_NUTRIENTS, DEFAULT_SHOWN_NUTRIENTS};
 pub const USER_COLUMNS: &str = r#"
     id, email, password_hash, display_name, sex, birth_date, height_cm,
     activity_level, goal, target_weight_kg, is_admin, disabled_at,
-    shown_nutrients, chart_nutrients, chart_mode, created_at
+    shown_nutrients, chart_nutrients, chart_mode, tracking_focus, created_at
 "#;
 
 #[derive(Debug, FromRow)]
@@ -32,7 +32,100 @@ pub struct UserRow {
     pub shown_nutrients: Option<Vec<String>>,
     pub chart_nutrients: Option<Vec<String>>,
     pub chart_mode: Option<String>,
+    /// NULL until the welcome flow has asked; see migration 0015.
+    pub tracking_focus: Option<String>,
     pub created_at: DateTime<Utc>,
+}
+
+/// Why this account is tracking.
+///
+/// The one fact the rest of the setup can be derived from: which nutrients go
+/// on screen, which get charted, and which way each target points. A focus is
+/// applied as a preset and never enforced — nothing reads it back to decide
+/// what a number means.
+///
+/// Every variant carries an explicit wire name. `snake_case` would produce the
+/// same strings today, but the names are also what the database CHECK allows,
+/// and `per_100g` showed that trusting a derive to match a constraint is how
+/// a valid choice turns into a 500.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub enum TrackingFocus {
+    #[serde(rename = "general")]
+    General,
+    #[serde(rename = "weight_loss")]
+    WeightLoss,
+    #[serde(rename = "muscle_gain")]
+    MuscleGain,
+    #[serde(rename = "keto")]
+    Keto,
+    #[serde(rename = "diabetes")]
+    Diabetes,
+    #[serde(rename = "blood_pressure")]
+    BloodPressure,
+    #[serde(rename = "heart_health")]
+    HeartHealth,
+    /// "None of these": the account chose to set things up by hand. A real
+    /// answer, which is why it is stored rather than left NULL.
+    #[serde(rename = "custom")]
+    Custom,
+}
+
+pub const ALL_FOCUSES: [TrackingFocus; 8] = [
+    TrackingFocus::General,
+    TrackingFocus::WeightLoss,
+    TrackingFocus::MuscleGain,
+    TrackingFocus::Keto,
+    TrackingFocus::Diabetes,
+    TrackingFocus::BloodPressure,
+    TrackingFocus::HeartHealth,
+    TrackingFocus::Custom,
+];
+
+impl TrackingFocus {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::General => "general",
+            Self::WeightLoss => "weight_loss",
+            Self::MuscleGain => "muscle_gain",
+            Self::Keto => "keto",
+            Self::Diabetes => "diabetes",
+            Self::BloodPressure => "blood_pressure",
+            Self::HeartHealth => "heart_health",
+            Self::Custom => "custom",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        ALL_FOCUSES.into_iter().find(|f| f.as_str() == s)
+    }
+
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::General => "General health",
+            Self::WeightLoss => "Weight loss",
+            Self::MuscleGain => "Muscle gain",
+            Self::Keto => "Keto / low-carb",
+            Self::Diabetes => "Carb awareness",
+            Self::BloodPressure => "Blood pressure",
+            Self::HeartHealth => "Heart health",
+            Self::Custom => "Custom",
+        }
+    }
+
+    /// One sentence, for the picker. What the preset puts on screen — never
+    /// what anyone should eat.
+    pub fn summary(&self) -> &'static str {
+        match self {
+            Self::General => "Calories and the three macros, with a budget from your estimate.",
+            Self::WeightLoss => "A calorie budget below your estimate, with protein kept up.",
+            Self::MuscleGain => "A protein goal by body weight and a small calorie surplus.",
+            Self::Keto => "A net-carbs budget, with fat as the rest of your energy.",
+            Self::Diabetes => "Carbohydrate, sugar and fibre, with per-meal totals in the diary.",
+            Self::BloodPressure => "Sodium front and centre, with a budget for it.",
+            Self::HeartHealth => "Saturated fat and sodium budgets, and a fibre goal.",
+            Self::Custom => "No preset. Choose your own nutrients and targets.",
+        }
+    }
 }
 
 /// How the home page draws the nutrients you follow.
@@ -102,6 +195,9 @@ pub struct Profile {
     /// Which nutrients the home page plots.
     pub chart_nutrients: Vec<Nutrient>,
     pub chart_mode: ChartMode,
+    /// Why this account is tracking. `null` until the welcome flow has asked,
+    /// which is what the client uses to decide whether to show it.
+    pub tracking_focus: Option<TrackingFocus>,
     pub created_at: DateTime<Utc>,
 }
 
@@ -125,6 +221,7 @@ impl From<UserRow> for Profile {
                 .as_deref()
                 .and_then(ChartMode::parse)
                 .unwrap_or_default(),
+            tracking_focus: u.tracking_focus.as_deref().and_then(TrackingFocus::parse),
             created_at: u.created_at,
         }
     }
@@ -172,6 +269,9 @@ pub struct UpdateProfileRequest {
     pub shown_nutrients: Option<Vec<Nutrient>>,
     pub chart_nutrients: Option<Vec<Nutrient>>,
     pub chart_mode: Option<ChartMode>,
+    /// Sets the focus alone. `POST /profile/focus` is the way to also apply
+    /// what it implies.
+    pub tracking_focus: Option<TrackingFocus>,
 }
 
 impl UpdateProfileRequest {
@@ -184,5 +284,38 @@ impl UpdateProfileRequest {
             .filter(|n| list.contains(n))
             .map(|n| n.key())
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The wire names are also the database's CHECK list, so every variant's
+    /// serde name, `as_str` and `parse` have to agree exactly.
+    #[test]
+    fn focus_wire_names_match_the_column_check() {
+        let allowed = [
+            "general",
+            "weight_loss",
+            "muscle_gain",
+            "keto",
+            "diabetes",
+            "blood_pressure",
+            "heart_health",
+            "custom",
+        ];
+        for (focus, expected) in ALL_FOCUSES.iter().zip(allowed) {
+            assert_eq!(focus.as_str(), expected);
+            assert_eq!(
+                serde_json::to_value(focus).unwrap(),
+                serde_json::Value::String(expected.into())
+            );
+            assert_eq!(TrackingFocus::parse(expected), Some(*focus));
+            let parsed: TrackingFocus =
+                serde_json::from_value(serde_json::Value::String(expected.into())).unwrap();
+            assert_eq!(parsed, *focus);
+        }
+        assert_eq!(TrackingFocus::parse("Keto"), None);
     }
 }

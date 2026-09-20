@@ -28,6 +28,7 @@ import {
   foodStatus,
 } from '@/components/shared'
 import FoodForm from '@/components/FoodForm'
+import { withNetCarbs } from '@/lib/nutrients'
 
 /**
  * A food's per-100g figures as a `Nutrients`.
@@ -36,16 +37,17 @@ import FoodForm from '@/components/FoodForm'
  * is not the same claim as "there is no fiber" — but a readout has to print
  * something, and the server flattens the same way when it does the arithmetic.
  */
-const per100g = (food: Food): Nutrients => ({
-  calories_kcal: food.calories_kcal,
-  protein_g: food.protein_g,
-  carbs_g: food.carbs_g,
-  fat_g: food.fat_g,
-  fiber_g: food.fiber_g ?? 0,
-  sugar_g: food.sugar_g ?? 0,
-  saturated_fat_g: food.saturated_fat_g ?? 0,
-  sodium_mg: food.sodium_mg ?? 0,
-})
+const per100g = (food: Food): Nutrients =>
+  withNetCarbs({
+    calories_kcal: food.calories_kcal,
+    protein_g: food.protein_g,
+    carbs_g: food.carbs_g,
+    fat_g: food.fat_g,
+    fiber_g: food.fiber_g ?? 0,
+    sugar_g: food.sugar_g ?? 0,
+    saturated_fat_g: food.saturated_fat_g ?? 0,
+    sodium_mg: food.sodium_mg ?? 0,
+  })
 
 /** How a revision came about, in words rather than a database enum. */
 const CHANGE_KIND: Record<string, string> = {

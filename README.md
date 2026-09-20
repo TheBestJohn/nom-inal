@@ -353,6 +353,40 @@ and no stored "next due" date that can drift out of step with reality. The
 trade-off is that nothing can reach out to you — these appear in the app, not in
 your inbox.
 
+**A focus is a preset, applied and never enforced.** The app stored the right
+things without knowing what they were for: someone counting sodium for their
+blood pressure and someone counting protein for the gym were given the same
+four readouts, the same calorie chart and no targets. The tracking focus is the
+one fact the rest can be derived from — which nutrients are on screen, which are
+charted, and which way each target points. Choosing one writes ordinary targets
+and display preferences in a single transaction, and every one of them stays
+editable; nothing anywhere reads the focus back to decide what a number means.
+The presets live on the server, once, as rules priced from the energy estimate
+(protein per kilogram, fat as a share of calories, carbs as what is left, sodium
+as a fixed ceiling), each with the basis for its figure in a comment beside it.
+A rule the profile cannot price is listed without an amount and says what it
+needs, rather than being dropped. The column is NULL until the question has been
+asked, which is what sends an account through the welcome flow exactly once;
+"custom" is the answer "none of these" and is never asked again.
+
+**The energy estimate is made on the server.** Mifflin–St Jeor, the activity
+multipliers and the goal adjustment lived in the Settings page as a suggestion.
+The presets derive their amounts from the same estimate, and two copies of a
+formula with a rounding step each is how a preset and the suggestion beside it
+come to disagree by a few kcal that nobody can explain. `GET /targets/suggestion`
+is that estimate, and it reads the latest weigh-in rather than the target weight,
+which the page and the presets had been answering differently.
+
+**Net carbs is derived where a total is serialised, never stored.** It is a
+nutrient a target can be set on and a chart can plot, but it is not a column: a
+food, a recipe, an entry, a meal and a day each compute it from the carbs and
+fibre they already carry at the one point they are written out, so none of them
+can disagree about it, and a target on it is evaluated against exactly the
+figure the readouts show. The day and the summary also carry the share of
+energy from each macro, divided by the Atwater sum of the three rather than by
+the stated calories — a label's calorie figure is rounded and sometimes counts
+fibre or alcohol — so the three shares always total 100.
+
 **Targets are standing settings, never set up daily.** A target belongs to you,
 not to a date: set it once and it is evaluated against every day, including past
 days and days with nothing logged.
@@ -410,8 +444,12 @@ GET    /health
 POST   /auth/register            POST   /auth/login             GET  /auth/me
 GET    /auth/registration                # public: are sign-ups open right now
 GET    /profile                  PATCH  /profile
+GET    /profile/focus                    # the eight focuses, one sentence each
+GET    /profile/focus/preview            # what applying ?focus= would set
+POST   /profile/focus                    # { focus, apply }: one transaction
 GET    /search/foods                     # SSE: tiered, fuzzy, streams as it finds
 GET    /targets                  PUT    /targets          # replaces the whole set
+GET    /targets/suggestion               # the energy estimate and what it suggests
 GET    /targets/{nutrient}       DELETE /targets/{nutrient}
 
 GET    /weights                  POST   /weights                GET  /weights/stats
@@ -587,6 +625,7 @@ backend/
   migrations/         SQL migrations, embedded into the binary
   src/
     domain/           request/response types and the nutrient arithmetic
+                      (energy.rs is the estimate, focus.rs the presets)
     routes/           one module per resource
     services/         USDA and Open Food Facts clients
     auth.rs           password hashing, JWT, the CurrentUser extractor
@@ -598,7 +637,7 @@ frontend/
     components/ui/    shadcn/ui primitives (Radix + Tailwind), owned in-tree
     components/       app components, including the three-source food picker
     lib/useFoodSearch parses the SSE search stream
-    pages/            one per route
+    pages/            one per route; settings/ has one per Settings section
     index.css         the Tailwind v4 theme — every colour token lives here
 ```
 

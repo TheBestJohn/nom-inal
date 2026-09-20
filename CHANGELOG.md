@@ -8,7 +8,34 @@ section and know what to update.
 
 ## Unreleased
 
-_Nothing yet._
+### Why are you tracking?
+
+- A tracking focus on the profile — general health, weight loss, muscle gain,
+  keto, diabetes, blood pressure, heart health, or custom — asked once at first
+  sign-in and changeable in Settings. Choosing one fills in targets, readouts
+  and the home chart from a preset; everything stays editable, and changing
+  focus later asks before replacing targets you already have.
+- Net carbs (carbs − fiber) is a nutrient in its own right: shown, charted and
+  targeted like any other, computed on the server so every readout agrees.
+- Energy share: the percentage of calories from protein, carbs and fat on the
+  day and on the 30-day average.
+- The calorie estimate behind suggested targets moved to the server
+  (Mifflin–St Jeor), so the suggestion, the presets and the API cannot
+  disagree.
+- Settings is one route per section — focus, body, targets, display,
+  reminders, integrations, account, admin — so each can be linked to.
+
+### API changes
+
+Additive:
+
+- `Profile.tracking_focus` (nullable enum), settable through `PATCH /profile`.
+- `GET /profile/focus`, `GET /profile/focus/preview?focus=`,
+  `POST /profile/focus { focus, apply }`.
+- `GET /targets/suggestion`.
+- `net_carbs_g` on every `Nutrients` payload; accepted as a nutrient for
+  targets and display preferences. Targets maximum rises from 8 to 9.
+- `energy_share` on the diary day and summary responses.
 
 ## v0.2.0 — 2026-09-20
 
