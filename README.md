@@ -386,8 +386,15 @@ barcode twice refreshes the existing food rather than creating a duplicate.
 
 ## API
 
-Base path `/api/v1`. All endpoints except `/health`, `/auth/register` and
-`/auth/login` require `Authorization: Bearer <token>`.
+Base path `/api/v1`. All endpoints except `/health`, `/auth/register`,
+`/auth/registration` and `/auth/login` require `Authorization: Bearer <token>`.
+
+The API is a contract. A response field is never renamed, removed or made
+nullable between tagged releases; between releases changes are additive only,
+and every wire-level change is listed under "API changes" for its release in
+[`CHANGELOG.md`](CHANGELOG.md). `/health` reports the `version`, `git_sha` and
+`built_at` of the running build, so a client can say exactly what it was
+talking to.
 
 The full spec is generated from the handlers and served at
 <http://localhost:8088/api/v1/openapi.json> — load it into Swagger UI, Insomnia,
