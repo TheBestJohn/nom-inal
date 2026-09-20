@@ -69,4 +69,11 @@ zip = { version = "5", default-features = false, features = ["deflate"] }
 # macros, so only the server and transport features are needed.
 rmcp = { version = "3", default-features = false, features = ["server", "transport-streamable-http-server"] }
 
+# Glyph outlines for the link-preview card a shared recipe shows in a chat
+# app. `image` already draws and encodes; this is only the part that turns a
+# character into a shape, and it is the smallest crate that does so — no text
+# shaping engine, no font discovery, and the font itself is vendored in
+# `assets/fonts` because the runtime image has none.
+ab_glyph = "0.2"
+
 [dev-dependencies]

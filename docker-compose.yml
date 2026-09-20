@@ -37,6 +37,10 @@ services:
       ALLOW_REGISTRATION: ${ALLOW_REGISTRATION:-true}
       PHOTO_DIR: /data/photos
       MAX_UPLOAD_MB: ${MAX_UPLOAD_MB:-15}
+      # Only a shared recipe's page needs this, for the absolute URLs its
+      # Open Graph tags carry. Empty means "take it from the request", which
+      # is what the web container in front forwards.
+      PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:-}
       # Seeds the quorum on a fresh install; the admin area owns it afterwards.
       FOOD_QUORUM: ${FOOD_QUORUM:-2}
       RUST_LOG: ${RUST_LOG:-nom_inal=info,tower_http=info,sqlx=warn}

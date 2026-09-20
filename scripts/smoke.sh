@@ -921,6 +921,92 @@ curl -fsS -X PUT "$BASE/recipes/$PREC" -H "$AUTH" -H 'content-type: application/
 status "sharing again restores the same link"        200 "$BASE/public/recipes/$PREC"
 status "a nonsense id is a 404, not an error"        404 "$BASE/public/recipes/00000000-0000-0000-0000-000000000000"
 
+echo "== shareable links"
+# A shared recipe's link is a page, served by the API at /r/{slug}: the
+# clients that matter for it — Slack, iMessage, Discord, search engines —
+# read the head and never run the script that would tell them which recipe
+# it is. So the name has to be in the markup, and the picture has to exist.
+#
+# ROOT is the API without /api/v1, because this page deliberately does not
+# live under the versioned API: it is an address people paste into messages.
+ROOT="${BASE%/api/v1}"
+STAMP="$(date +%s)-$RANDOM"
+
+SLUGGED=$(curl -fsS -X POST "$BASE/recipes" -H "$AUTH" -H 'content-type: application/json' -d "{
+  \"name\":\"Crème Brûlée $STAMP\",\"servings\":4,\"is_public\":true,
+  \"instructions\":\"1. Mix it all. 2. Bake for 40 minutes.\",
+  \"items\":[{\"food_id\":\"$OATS\",\"quantity_g\":200}]}")
+SLUG_ID=$(echo "$SLUGGED" | j "['id']")
+SLUG=$(echo "$SLUGGED" | j "['slug']")
+expect "a new recipe is slugged from its name" "$SLUG" "creme-brulee-$STAMP"
+
+PAGE=$(curl -fsS "$ROOT/r/$SLUG")
+status "the page is served with no token" 200 "$ROOT/r/$SLUG"
+expect "as HTML, not as the app shell" \
+  "$(curl -fsS -o /dev/null -w '%{content_type}' "$ROOT/r/$SLUG")" "text/html; charset=utf-8"
+expect "the title names the recipe" \
+  "$(echo "$PAGE" | grep -c "<title>Crème Brûlée $STAMP — nom-inal</title>")" "1"
+expect "and so does og:title" \
+  "$(echo "$PAGE" | grep -c "property=\"og:title\" content=\"Crème Brûlée $STAMP\"")" "1"
+expect "og:image points at this recipe's card" \
+  "$(echo "$PAGE" | grep -c "property=\"og:image\" content=\"[^\"]*/public/recipes/$SLUG/preview.png\"")" "1"
+# The structured data is the same shape this application's own importer reads
+# off other people's recipe sites, so a shared recipe can be imported back.
+LD=$(echo "$PAGE" | sed -n 's|.*<script type="application/ld+json">\(.*\)</script>.*|\1|p')
+expect "it carries a schema.org Recipe" "$(echo "$LD" | j "['@type']")" "Recipe"
+expect "named, with its yield and ingredients" \
+  "$(echo "$LD" | j " and (d['name'], d['recipeYield'], len(d['recipeIngredient']))")" \
+  "('Crème Brûlée $STAMP', '4 servings', 1)"
+
+# Renaming does not break the link somebody already sent. The old slug still
+# finds the recipe and says, permanently, where it lives now.
+curl -fsS -X PUT "$BASE/recipes/$SLUG_ID" -H "$AUTH" -H 'content-type: application/json' -d "{
+  \"name\":\"Rhubarb Crumble $STAMP\",\"servings\":4,\"is_public\":true,
+  \"items\":[{\"food_id\":\"$OATS\",\"quantity_g\":200}]}" >/dev/null
+NEW_SLUG=$(curl -fsS "$BASE/recipes/$SLUG_ID" -H "$AUTH" | j "['slug']")
+expect "renaming re-slugs"                "$NEW_SLUG" "rhubarb-crumble-$STAMP"
+status "the old slug still resolves"      301 "$ROOT/r/$SLUG"
+expect "to the recipe's new address" \
+  "$(curl -s -o /dev/null -w '%{redirect_url}' "$ROOT/r/$SLUG")" "$ROOT/r/$NEW_SLUG"
+expect "and following it lands on the recipe" \
+  "$(curl -fsSL "$ROOT/r/$SLUG" | grep -c "<title>Rhubarb Crumble $STAMP — nom-inal</title>")" "1"
+# Links handed out before slugs existed are uuids, and keep working the same
+# way: one canonical address per recipe, arrived at from either.
+status "a uuid link still resolves"       301 "$ROOT/r/$SLUG_ID"
+expect "to the same canonical address" \
+  "$(curl -s -o /dev/null -w '%{redirect_url}' "$ROOT/r/$SLUG_ID")" "$ROOT/r/$NEW_SLUG"
+status "an unknown slug is a 404, not an error" 404 "$ROOT/r/no-such-recipe-at-all"
+
+# The card. 1200x630 is what Open Graph asks for and what every client crops
+# to, drawn from the recipe when it has no photo and from its first photo
+# when it has one.
+png_size() { curl -fsS "$1" | python3 -c 'import sys,struct;d=sys.stdin.buffer.read();print("%dx%d" % struct.unpack(">II", d[16:24]))'; }
+expect "a recipe with no photo gets a drawn card" \
+  "$(png_size "$BASE/public/recipes/$NEW_SLUG/preview.png")" "1200x630"
+expect "served as a PNG" \
+  "$(curl -fsS -o /dev/null -w '%{content_type}' "$BASE/public/recipes/$NEW_SLUG/preview.png")" "image/png"
+expect "a recipe with a photo gets its photo, cropped" \
+  "$(png_size "$BASE/public/recipes/$PREC/preview.png")" "1200x630"
+
+# Generating a PNG per crawler hit would be the whole cost of this feature.
+PREVIEW_ETAG=$(curl -fsS -o /dev/null -D - "$BASE/public/recipes/$NEW_SLUG/preview.png" \
+  | grep -i '^etag:' | tr -d '\r' | cut -d' ' -f2)
+expect "the card is tagged"  "$(printf '%s' "$PREVIEW_ETAG" | head -c 1)" '"'
+status "and answers a matching If-None-Match with 304" 304 \
+  -H "If-None-Match: $PREVIEW_ETAG" "$BASE/public/recipes/$NEW_SLUG/preview.png"
+
+# Un-sharing takes the page and the card with it, exactly as it takes the
+# JSON and the photos.
+curl -fsS -X PUT "$BASE/recipes/$SLUG_ID" -H "$AUTH" -H 'content-type: application/json' -d "{
+  \"name\":\"Rhubarb Crumble $STAMP\",\"servings\":4,\"is_public\":false,
+  \"items\":[{\"food_id\":\"$OATS\",\"quantity_g\":200}]}" >/dev/null
+status "a private recipe has no page"           404 "$ROOT/r/$NEW_SLUG"
+status "nor one for its owner: no token is read" 404 "$ROOT/r/$NEW_SLUG" -H "$AUTH"
+status "and no card"                            404 "$BASE/public/recipes/$NEW_SLUG/preview.png"
+expect "the page that is refused is still a page, not JSON" \
+  "$(curl -s -o /dev/null -w '%{content_type}' "$ROOT/r/$NEW_SLUG")" "text/html; charset=utf-8"
+curl -fsS -X DELETE "$BASE/recipes/$SLUG_ID" -H "$AUTH" >/dev/null
+
 # A recipe that is logged cannot be deleted; its photos must survive the refusal.
 PLOG=$(curl -fsS -X POST "$BASE/diary" -H "$AUTH" -H 'content-type: application/json' \
   -d "{\"logged_on\":\"2026-05-06\",\"meal\":\"lunch\",\"recipe_id\":\"$PREC\",\"recipe_servings\":1}" | j "['id']")
@@ -1380,7 +1466,7 @@ status "recipe in use cannot be deleted" 400 -X DELETE "$BASE/recipes/$RID" -H "
 
 echo "== openapi"
 PATHS=$(curl -fsS "${BASE%/api/v1}/api/v1/openapi.json" | j " and len(d['paths'])")
-if [ "$PATHS" -ge 56 ]; then pass "spec documents $PATHS paths"; else fail "spec only documents $PATHS paths"; fi
+if [ "$PATHS" -ge 57 ]; then pass "spec documents $PATHS paths"; else fail "spec only documents $PATHS paths"; fi
 
 echo
 if [ "$failures" -eq 0 ]; then

@@ -151,7 +151,7 @@ function RecipeView({ recipe, onEdit }: { recipe: Recipe; onEdit: () => void }) 
               <Pencil /> Edit
             </Button>
           )}
-          {recipe.is_public && <CopyLinkButton url={api.publicRecipeUrl(recipe.id)} />}
+          {recipe.is_public && <CopyLinkButton url={api.publicRecipeUrl(recipe.slug)} />}
           <Button
             variant="outline"
             size="sm"
@@ -499,7 +499,7 @@ export default function RecipeEditorPage() {
                     The link appears once the recipe is created.
                   </p>
                 ) : (
-                  <CopyLinkButton url={api.publicRecipeUrl(id!)} />
+                  existing.data && <CopyLinkButton url={api.publicRecipeUrl(existing.data.slug)} />
                 ))}
             </div>
           </div>

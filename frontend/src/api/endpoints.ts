@@ -26,7 +26,6 @@ import type {
   NutrientBasis,
   NutritionTarget,
   Photo,
-  PublicRecipe,
   Reminder,
   ReminderKind,
   ReminderStatus,
@@ -232,10 +231,15 @@ export const api = {
   updateRecipe: (id: string, body: RecipeInput) =>
     request<Recipe>(`/recipes/${id}`, { method: 'PUT', body }),
   deleteRecipe: (id: string) => request<void>(`/recipes/${id}`, { method: 'DELETE' }),
-  /** Shared means public: readable with no token, and so is this call. */
-  publicRecipe: (id: string) => request<PublicRecipe>(`/public/recipes/${id}`),
-  /** Where a shared recipe lives for anyone holding the link. */
-  publicRecipeUrl: (id: string) => `${window.location.origin}/r/${id}`,
+  /**
+   * Where a shared recipe lives for anyone holding the link.
+   *
+   * The slug, not the id: that is the canonical address, and the page at it
+   * is served by the API as finished HTML so a chat app or a search engine
+   * sees the recipe's own name and picture rather than the app shell. An
+   * older link built from a uuid still resolves, and redirects here.
+   */
+  publicRecipeUrl: (slug: string) => `${window.location.origin}/r/${slug}`,
   /** Saves the recipe as a file: the seed-repository JSON, or a Markdown card. */
   downloadRecipeExport: (id: string, name: string, format: 'json' | 'markdown') =>
     downloadFile(

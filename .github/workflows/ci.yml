@@ -142,6 +142,41 @@ jobs:
           # SPA fallback: a client-side route must serve the app shell, not 404.
           test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8088/weight)" = 200
 
+          # A shared recipe's link has to preview as that recipe. /r/ is the one
+          # path nginx hands to the API instead of the SPA, and only the
+          # assembled stack can show that it does: served the app shell instead,
+          # every shared link would unfurl as the same generic site card, which
+          # is the bug this whole address exists to fix.
+          J='import sys,json;d=json.load(sys.stdin);print(eval(sys.argv[1],{"d":d}))'
+          API=http://127.0.0.1:8088/api/v1
+          EMAIL="ci-$(date +%s)@example.test"
+          TOKEN=$(curl -fsS -X POST "$API/auth/register" -H 'content-type: application/json' \
+            -d "{\"email\":\"$EMAIL\",\"password\":\"ci-test-password\",\"display_name\":\"CI\"}" \
+            | python3 -c "$J" "d['access_token']")
+          FOOD=$(curl -fsS -X POST "$API/foods" -H "authorization: Bearer $TOKEN" \
+            -H 'content-type: application/json' \
+            -d '{"name":"CI oats","calories_kcal":379,"protein_g":13.2,"carbs_g":67.7,"fat_g":6.5}' \
+            | python3 -c "$J" "d['id']")
+          SLUG=$(curl -fsS -X POST "$API/recipes" -H "authorization: Bearer $TOKEN" \
+            -H 'content-type: application/json' \
+            -d "{\"name\":\"CI Porridge\",\"servings\":2,\"is_public\":true,\"items\":[{\"food_id\":\"$FOOD\",\"quantity_g\":80}]}" \
+            | python3 -c "$J" "d['slug']")
+
+          PAGE=$(curl -fsS -D /tmp/r.headers "http://127.0.0.1:8088/r/$SLUG")
+          grep -qi '^content-type: text/html' /tmp/r.headers
+          echo "$PAGE" | grep -q '<title>CI Porridge — nom-inal</title>'
+          echo "$PAGE" | grep -q 'property="og:title" content="CI Porridge"'
+          echo "$PAGE" | grep -q '<script type="application/ld+json">'
+          CARD=$(echo "$PAGE" | sed -n 's|.*property="og:image" content="\([^"]*\)".*|\1|p')
+          test "$(curl -s -o /dev/null -w '%{http_code} %{content_type}' "$CARD")" = "200 image/png"
+
+          # Un-sharing takes the page with it, through nginx as everywhere else.
+          PRIV=$(curl -fsS -X POST "$API/recipes" -H "authorization: Bearer $TOKEN" \
+            -H 'content-type: application/json' \
+            -d "{\"name\":\"CI Private\",\"servings\":1,\"items\":[{\"food_id\":\"$FOOD\",\"quantity_g\":80}]}" \
+            | python3 -c "$J" "d['slug']")
+          test "$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:8088/r/$PRIV")" = 404
+
       # Without this, a container that dies at boot shows up only as
       # "dependency failed to start ... is unhealthy", with no reason.
       - name: Show container logs on failure

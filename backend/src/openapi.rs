@@ -64,6 +64,7 @@ use utoipa::{Modify, OpenApi};
         crate::routes::recipes::import_from_url,
         crate::routes::public::recipe,
         crate::routes::public::photo,
+        crate::routes::preview::preview,
         crate::routes::account::export,
         crate::routes::account::import,
         crate::routes::recipes::from_meal,

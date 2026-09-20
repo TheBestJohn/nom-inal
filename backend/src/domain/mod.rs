@@ -11,6 +11,7 @@ pub mod photo;
 pub mod recipe;
 pub mod recipe_text;
 pub mod reminder;
+pub mod slug;
 pub mod target;
 pub mod user;
 pub mod weight;
