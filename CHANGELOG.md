@@ -6,7 +6,11 @@ only. Every wire-level change is listed under **API changes** for its release,
 breaking ones first and marked as such, so a client author can read one
 section and know what to update.
 
-## Unreleased (v0.2.0)
+## Unreleased
+
+_Nothing yet._
+
+## v0.2.0 — 2026-09-20
 
 ### Foods are a shared record
 
