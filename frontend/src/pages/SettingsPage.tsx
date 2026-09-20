@@ -21,6 +21,7 @@ import RemindersEditor from '@/components/RemindersEditor'
 import DisplayEditor from '@/components/DisplayEditor'
 import ApiKeysCard from '@/components/ApiKeysCard'
 import AboutCard from '@/components/AboutCard'
+import ConnectAssistantCard from '@/components/ConnectAssistantCard'
 import { ErrorNote, Spinner } from '@/components/shared'
 
 const ACTIVITY = [
@@ -225,6 +226,8 @@ export default function SettingsPage() {
       <RemindersEditor />
 
       <ApiKeysCard />
+
+      <ConnectAssistantCard />
 
       <AboutCard />
     </div>

@@ -19,6 +19,11 @@ export default defineConfig({
         target: process.env.VITE_API_PROXY ?? 'http://localhost:8080',
         changeOrigin: true,
       },
+      // MCP lives on the API too; proxied so the URL Settings shows works in dev.
+      '/mcp': {
+        target: process.env.VITE_API_PROXY ?? 'http://localhost:8080',
+        changeOrigin: true,
+      },
     },
   },
   build: {

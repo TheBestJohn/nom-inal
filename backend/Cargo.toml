@@ -8,7 +8,7 @@ description = "Nutrition, macro, recipe and weight tracking API"
 [dependencies]
 axum = { version = "0.8", features = ["macros", "multipart"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "fs", "io-util"] }
-tower = "0.5"
+tower = { version = "0.5", features = ["util"] }
 tower-http = { version = "0.6", features = ["cors", "trace", "compression-gzip"] }
 
 sqlx = { version = "0.8", default-features = false, features = [
@@ -50,5 +50,10 @@ futures = { version = "0.3", default-features = false, features = ["std"] }
 validator = { version = "0.19", features = ["derive"] }
 
 utoipa = { version = "5", features = ["axum_extras", "chrono", "uuid"] }
+
+# MCP over Streamable HTTP, served at /mcp by this same process. Tools are
+# assembled from the OpenAPI registry at startup rather than declared with the
+# macros, so only the server and transport features are needed.
+rmcp = { version = "3", default-features = false, features = ["server", "transport-streamable-http-server"] }
 
 [dev-dependencies]

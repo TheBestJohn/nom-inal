@@ -35,6 +35,7 @@ Rust (Axum) API + Postgres + React SPA, all behind one `docker compose up`.
 | **API keys** | Per-user, scoped read or read-write, revocable, for scripts and dashboards |
 | **Export** | `GET /foods/export` dumps the whole food database keyed by natural identity, ready to commit to a repository |
 | **OpenAPI 3.1** | Generated from the handlers, served at `/api/v1/openapi.json` |
+| **MCP** | Served by the API at `/mcp`, behind the same keys. Every endpoint is a tool, generated from the OpenAPI document, plus `log_food`, `today`, `progress` and `add_recipe_from_text` — see **MCP** under API |
 
 ### Where the food data comes from
 
@@ -444,6 +445,8 @@ GET    /diary                    POST   /diary
 GET    /diary/day                        # one day, grouped by meal, vs targets
 GET    /diary/summary                    # per-day totals over a range
 GET    /diary/{id}               PATCH  /diary/{id}             DELETE /diary/{id}
+
+POST   /mcp                              # MCP over Streamable HTTP, API keys only
 ```
 
 </details>
@@ -467,6 +470,62 @@ compute:
 
 `remaining` is always `amount - consumed`, signed. `status` is `under`/`over`
 for a budget and `short`/`met` for a goal.
+
+### MCP
+
+The API serves the [Model Context Protocol](https://modelcontextprotocol.io/)
+itself, at `/mcp`, over Streamable HTTP. There is no separate server to run:
+point an assistant at your instance's URL plus `/mcp` and authenticate with an
+API key from Settings, as `Authorization: Bearer <key>` or `X-API-Key`. A
+read-only key sees only the tools that read; a key that can make changes sees
+them all. Session tokens are refused there — a key can be scoped and revoked
+on its own, which is what you want for something that acts on your behalf.
+
+**Every endpoint is a tool, generated from the OpenAPI document at startup.**
+The same `#[utoipa::path]` annotations that produce `/api/v1/openapi.json`
+produce the tool list, one per operation, named `{tag}_{operation}`
+(`diary_day`, `foods_search_external`, `weights_upsert`), with the input
+schema composed from the path and query parameters and the request body,
+`$ref`s resolved so a client sees the whole shape. Calling one builds an HTTP
+request and dispatches it to the router in-process — the same extractor
+authenticates the key, the same validators check the body, and the same
+`{error, message}` comes back when something is refused. A new endpoint is a
+new tool with nothing to install or update, and a tool cannot describe a
+request the API no longer accepts, because there is no second copy to go
+stale. Credentials, administration, photo uploads and image bytes are the
+only operations left out.
+
+Four tools are written by hand, for the sentences people actually say:
+
+| Tool | What it does |
+|---|---|
+| `log_food(text, meal, date?, confirm?)` | "2 eggs", "150 g chicken breast", "a banana and 30 g oats". Finds each food, works out the grams (a count × the food's serving size, or the weight as written) and returns what it *would* log with the calories. Nothing is written until `confirm: true`, and a match that was only fuzzy is never written without the `food_id` from the confirmation. |
+| `today(date?)` | The day's entries by meal, its totals, and every target already evaluated. |
+| `progress(days?)` | Per-day totals and the average over logged days, plus the weight entries and trend for the same window. |
+| `add_recipe_from_text(name, servings, ingredient_lines[])` | Resolves each line to a food; a line with no confident match becomes a free-text ingredient, and the response says which were resolved and which were not. |
+
+A resource, `nom-inal://guide`, explains the domain — nutrients are per 100 g,
+an entry is a food in grams or a recipe in servings, free-text ingredients
+count for nothing and say so, a goal is a floor and a budget a ceiling — so a
+model reads the rules rather than inferring them from field names.
+
+Clients that speak Streamable HTTP connect directly:
+
+```json
+{ "type": "http", "url": "https://nom.example.com/mcp",
+  "headers": { "Authorization": "Bearer nomi_…" } }
+```
+
+Clients that only speak stdio go through [`mcp-remote`](https://www.npmjs.com/package/mcp-remote):
+
+```bash
+npx -y mcp-remote https://nom.example.com/mcp --header "Authorization: Bearer nomi_…"
+```
+
+Settings → Integrations shows both, filled in with this instance's URL. The
+transport is stateless — one JSON-RPC exchange per POST, each carrying its own
+key — so there is no session to lose or to steal, and `curl` is enough to try
+it (see the `== mcp` section of `scripts/smoke.sh`).
 
 ---
 

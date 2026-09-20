@@ -661,6 +661,53 @@ curl -fsS -X DELETE "$BASE/keys/$KEYID" -H "$AUTH2" >/dev/null
 status "a revoked key stops working"     401 "$BASE/foods" -H "Authorization: Bearer $KEYTOKEN"
 status "and frees its name"              201 -X POST "$BASE/keys" -H "$AUTH2" -H 'content-type: application/json' -d '{"name":"smoke dashboard"}'
 
+echo "== mcp"
+# The API serves MCP itself, stateless over Streamable HTTP: one JSON-RPC
+# request per POST, authenticated with the same keys as everything else. The
+# tools are read from the OpenAPI registry, so the assertions below name one
+# generated tool and one hand-written one rather than counting.
+MCP="${BASE%/api/v1}/mcp"
+mcp() { # mcp <key> <method> [params-json]
+  local params="${3:-"{}"}"
+  curl -s -X POST "$MCP" -H 'content-type: application/json' \
+    -H 'accept: application/json, text/event-stream' -H "Authorization: Bearer $1" \
+    -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"$2\",\"params\":$params}"
+}
+MRKEY=$(curl -fsS -X POST "$BASE/keys" -H "$AUTH" -H 'content-type: application/json' -d '{"name":"smoke mcp reader"}' | j "['token']")
+MWKEY=$(curl -fsS -X POST "$BASE/keys" -H "$AUTH" -H 'content-type: application/json' -d '{"name":"smoke mcp writer","scopes":["write"]}' | j "['token']")
+
+status "no key is a 401"                 401 -X POST "$MCP" -H 'content-type: application/json' -H 'accept: application/json, text/event-stream' -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"smoke","version":"0"}}}'
+status "a session token is not a key"    401 -X POST "$MCP" -H 'content-type: application/json' -H 'accept: application/json, text/event-stream' -H "$AUTH" -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"smoke","version":"0"}}}'
+expect "initialize names the server" \
+  "$(mcp "$MWKEY" initialize '{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"smoke","version":"0"}}' | j "['result']['serverInfo']['name']")" "nom-inal"
+
+WTOOLS=$(mcp "$MWKEY" tools/list)
+expect "a generated tool is listed"      "$(echo "$WTOOLS" | j " and 'diary_day' in [t['name'] for t in d['result']['tools']]")" "True"
+expect "a composite tool is listed"      "$(echo "$WTOOLS" | j " and 'log_food' in [t['name'] for t in d['result']['tools']]")" "True"
+expect "its schema was dereferenced"     "$(echo "$WTOOLS" | j " and 'food_id' in [t for t in d['result']['tools'] if t['name']=='recipes_create'][0]['inputSchema']['properties']['items']['items']['properties']")" "True"
+RTOOLS=$(mcp "$MRKEY" tools/list)
+expect "a read key sees no write tools"  "$(echo "$RTOOLS" | j " and [t['name'] for t in d['result']['tools'] if t['name'] in ('diary_create','log_food','recipes_update')]")" "[]"
+expect "but still the reads"             "$(echo "$RTOOLS" | j " and 'today' in [t['name'] for t in d['result']['tools']]")" "True"
+
+# The composite answers with the API's own figures: the same day, fetched
+# over HTTP, must agree to the cent.
+DAYKCAL=$(curl -fsS "$BASE/diary/day?date=2026-01-15" -H "$AUTH" | j "['total']['calories_kcal']")
+expect "tools/call today matches the API" \
+  "$(mcp "$MRKEY" tools/call '{"name":"today","arguments":{"date":"2026-01-15"}}' | j "['result']['structuredContent']['total']['calories_kcal']")" "$DAYKCAL"
+# A generated tool dispatches in-process to the same handler.
+expect "a generated tool answers too" \
+  "$(mcp "$MRKEY" tools/call '{"name":"diary_day","arguments":{"date":"2026-01-15"}}' | j "['result']['structuredContent']['total']['calories_kcal']")" "$DAYKCAL"
+# "2 bananas": the plural finds "Bananas, raw", and the count is servings.
+# 2 x 118 g x 89 kcal/100 g = 210.04, and nothing is written without confirm.
+LOG=$(mcp "$MWKEY" tools/call '{"name":"log_food","arguments":{"text":"2 bananas","meal":"snack","date":"2026-01-16"}}')
+expect "log_food resolves a count to grams" "$(echo "$LOG" | j "['result']['structuredContent']['items'][0]['grams']")" "236.0"
+expect "and reports the calories"           "$(echo "$LOG" | j "['result']['structuredContent']['total_kcal']")" "210.04"
+expect "without writing anything"           "$(echo "$LOG" | j "['result']['structuredContent']['logged']")" "False"
+expect "a read key is refused a write tool" \
+  "$(mcp "$MRKEY" tools/call '{"name":"log_food","arguments":{"text":"banana","meal":"snack"}}' | j "['result']['isError']")" "True"
+expect "the guide resource reads back" \
+  "$(mcp "$MRKEY" resources/read '{"uri":"nom-inal://guide"}' | j " and 'per 100 g' in d['result']['contents'][0]['text']")" "True"
+
 echo "== administration"
 # A self-hosted instance has no outside authority to appoint an owner, so the
 # first account to exist becomes one. That rule only has something to say on a

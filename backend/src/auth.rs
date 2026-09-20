@@ -48,6 +48,39 @@ pub struct CurrentUser {
     pub can_write: bool,
 }
 
+/// Resolve whoever the request headers say is calling, without yet asking
+/// what they are allowed to do.
+///
+/// Split from the extractor so the MCP endpoint can share it: an MCP call is
+/// always an HTTP POST, so the method-based scope rule below would refuse a
+/// read-only key before it had listed a single tool. The scope is still
+/// enforced — every tool call is dispatched back through the API with the
+/// same header, where the extractor applies it to the real method.
+pub async fn authenticate_headers(
+    state: &AppState,
+    headers: &axum::http::HeaderMap,
+) -> Result<CurrentUser, ApiError> {
+    let header = headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|h| {
+            h.strip_prefix("Bearer ")
+                .or_else(|| h.strip_prefix("bearer "))
+        })
+        // `X-API-Key` is accepted as well, because that is the header most
+        // scripting clients and dashboards expect for a static key.
+        .or_else(|| headers.get("x-api-key").and_then(|v| v.to_str().ok()))
+        .ok_or(ApiError::Unauthorized)?;
+
+    let token = header.trim();
+
+    if token.starts_with(API_KEY_PREFIX) {
+        authenticate_api_key(state, token).await
+    } else {
+        authenticate_session(state, token).await
+    }
+}
+
 impl FromRequestParts<AppState> for CurrentUser {
     type Rejection = ApiError;
 
@@ -55,26 +88,7 @@ impl FromRequestParts<AppState> for CurrentUser {
         parts: &mut Parts,
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
-        let header = parts
-            .headers
-            .get(axum::http::header::AUTHORIZATION)
-            .and_then(|v| v.to_str().ok())
-            .and_then(|h| {
-                h.strip_prefix("Bearer ")
-                    .or_else(|| h.strip_prefix("bearer "))
-            })
-            // `X-API-Key` is accepted as well, because that is the header most
-            // scripting clients and dashboards expect for a static key.
-            .or_else(|| parts.headers.get("x-api-key").and_then(|v| v.to_str().ok()))
-            .ok_or(ApiError::Unauthorized)?;
-
-        let token = header.trim();
-
-        let user = if token.starts_with(API_KEY_PREFIX) {
-            authenticate_api_key(state, token).await?
-        } else {
-            authenticate_session(state, token).await?
-        };
+        let user = authenticate_headers(state, &parts.headers).await?;
 
         // One choke point for scope enforcement, rather than a check repeated
         // in every mutating handler and forgotten in the next one added. Safe
