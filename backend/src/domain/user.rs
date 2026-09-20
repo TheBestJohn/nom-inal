@@ -11,7 +11,7 @@ use super::target::{Nutrient, DEFAULT_CHART_NUTRIENTS, DEFAULT_SHOWN_NUTRIENTS};
 pub const USER_COLUMNS: &str = r#"
     id, email, password_hash, display_name, sex, birth_date, height_cm,
     activity_level, goal, target_weight_kg, is_admin, disabled_at,
-    shown_nutrients, chart_nutrients, chart_mode, tracking_focus, created_at
+    shown_nutrients, chart_nutrients, chart_mode, tracking_focus, units, created_at
 "#;
 
 #[derive(Debug, FromRow)]
@@ -34,7 +34,39 @@ pub struct UserRow {
     pub chart_mode: Option<String>,
     /// NULL until the welcome flow has asked; see migration 0015.
     pub tracking_focus: Option<String>,
+    /// NULL is metric; see migration 0017.
+    pub units: Option<String>,
     pub created_at: DateTime<Utc>,
+}
+
+/// How body measurements are shown and typed. Storage is metric either way:
+/// kilograms and centimetres go over the wire, and the client converts at
+/// the edge. Food amounts are not covered — a diary entry is grams whatever
+/// this says, and "1 cup" is a household portion on the food, not a unit.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum Units {
+    #[default]
+    Metric,
+    /// Pounds for weight, feet and inches for height.
+    Imperial,
+}
+
+impl Units {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Metric => "metric",
+            Self::Imperial => "imperial",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "metric" => Some(Self::Metric),
+            "imperial" => Some(Self::Imperial),
+            _ => None,
+        }
+    }
 }
 
 /// Why this account is tracking.
@@ -198,6 +230,9 @@ pub struct Profile {
     /// Why this account is tracking. `null` until the welcome flow has asked,
     /// which is what the client uses to decide whether to show it.
     pub tracking_focus: Option<TrackingFocus>,
+    /// Display preference for body measurements. Always resolved; the API
+    /// itself stays metric whatever this says.
+    pub units: Units,
     pub created_at: DateTime<Utc>,
 }
 
@@ -222,6 +257,11 @@ impl From<UserRow> for Profile {
                 .and_then(ChartMode::parse)
                 .unwrap_or_default(),
             tracking_focus: u.tracking_focus.as_deref().and_then(TrackingFocus::parse),
+            units: u
+                .units
+                .as_deref()
+                .and_then(Units::parse)
+                .unwrap_or_default(),
             created_at: u.created_at,
         }
     }
@@ -272,6 +312,9 @@ pub struct UpdateProfileRequest {
     /// Sets the focus alone. `POST /profile/focus` is the way to also apply
     /// what it implies.
     pub tracking_focus: Option<TrackingFocus>,
+    /// `metric` or `imperial`. Changes how the client shows and reads body
+    /// measurements; the fields on this request stay in kg and cm.
+    pub units: Option<Units>,
 }
 
 impl UpdateProfileRequest {

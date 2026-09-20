@@ -1,6 +1,6 @@
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
-use axum::routing::{get, post};
+use axum::routing::{delete as delete_route, get, post};
 use axum::Router;
 use chrono::{DateTime, Utc};
 use sqlx::{Postgres, Transaction};
@@ -8,11 +8,14 @@ use uuid::Uuid;
 use validator::Validate;
 
 use crate::auth::CurrentUser;
+use crate::domain::food::food_columns;
 use crate::domain::food::{
-    BarcodeLookup, ExportQuery, ExternalFood, ExternalSearchQuery, ExternalSearchResponse, Food,
-    FoodDetail, FoodExport, FoodExportBundle, FoodProvenance, FoodRevision, FoodSearchQuery,
-    FoodVerification, RevertRequest, UpsertFoodRequest, Verdict, VerificationStatus, VerifyRequest,
+    AddPortionRequest, BarcodeLookup, ExportQuery, ExternalFood, ExternalPortion,
+    ExternalSearchQuery, ExternalSearchResponse, Food, FoodDetail, FoodExport, FoodExportBundle,
+    FoodProvenance, FoodRevision, FoodSearchQuery, FoodVerification, RecentItem, RecentQuery,
+    RecentRecipe, RevertRequest, UpsertFoodRequest, Verdict, VerificationStatus, VerifyRequest,
 };
+use crate::domain::nutrients::Nutrients;
 use crate::error::{ApiError, ApiResult};
 use crate::extract::Json;
 use crate::state::AppState;
@@ -20,6 +23,7 @@ use crate::state::AppState;
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/", get(list).post(create))
+        .route("/recent", get(recent))
         .route("/search/external", get(search_external))
         .route("/external/{source}/{source_id}", get(external_detail))
         .route("/barcode/{upc}", get(barcode))
@@ -28,6 +32,8 @@ pub fn router() -> Router<AppState> {
         .route("/{id}", get(get_one).put(update).delete(delete))
         .route("/{id}/revisions", get(revisions))
         .route("/{id}/revert", post(revert))
+        .route("/{id}/portions", post(add_portion))
+        .route("/{id}/portions/{portion_id}", delete_route(remove_portion))
         .route(
             "/{id}/verify",
             get(verifications).post(verify).delete(unverify),
@@ -36,13 +42,8 @@ pub fn router() -> Router<AppState> {
 
 use crate::domain::food::FOOD_COLUMNS as COLUMNS;
 
-/// Column list qualified for queries that join `foods` to anything else.
-const F_COLUMNS: &str = r#"
-    f.id, f.source, f.source_id, f.name, f.brand, f.upc, f.calories_kcal, f.protein_g,
-    f.carbs_g, f.fat_g, f.fiber_g, f.sugar_g, f.saturated_fat_g, f.sodium_mg,
-    f.serving_size_g, f.serving_label, f.variant_of, f.variant_label, f.revision,
-    f.verified_at, f.disputed_at, f.nutrient_basis, f.created_by, f.created_at, f.updated_at
-"#;
+/// The same list for the two statements that alias `foods` as `f`.
+const F_COLUMNS: &str = food_columns!("f");
 
 /// Open a transaction that the history triggers can attribute.
 ///
@@ -439,6 +440,25 @@ pub async fn import(
         return Err(ApiError::bad_request("source_id is required"));
     }
 
+    // Household portions come from USDA's detail record, not its search hits,
+    // and the picker imports straight from a search hit. Rather than make
+    // every client know to fetch the detail first — the UI, a script, an
+    // assistant calling the tool — the import fetches it here when nothing
+    // was sent. Best effort: a food without its portions is still the food,
+    // so an upstream failure is logged and the import goes ahead.
+    let portions: Vec<ExternalPortion> = if body.portions.is_empty() && body.source == "usda" {
+        match state.usda.get(body.source_id.trim()).await {
+            Ok(Some(detail)) => detail.portions,
+            Ok(None) => Vec::new(),
+            Err(e) => {
+                tracing::warn!(error = %e, "USDA detail unavailable; importing without portions");
+                Vec::new()
+            }
+        }
+    } else {
+        body.portions.clone()
+    };
+
     let mut tx = authored_tx(&state, user.id, "import", None).await?;
 
     // Idempotent by (source, source_id): importing the same upstream food twice
@@ -492,25 +512,267 @@ pub async fn import(
     .fetch_optional(&mut *tx)
     .await?;
 
-    tx.commit().await?;
-
     // The `WHERE foods.revision = 1` guard above means a conflict with a
     // locally-edited row updates nothing and RETURNING yields no row. That is
     // success, not failure: the caller wanted this food to exist, and it does.
-    let row = match row {
-        Some(row) => row,
+    let food_id: Uuid = match &row {
+        Some(row) => row.id,
         None => {
-            sqlx::query_as(&format!(
-                "SELECT {COLUMNS} FROM foods WHERE source = $1 AND source_id = $2"
-            ))
-            .bind(&body.source)
-            .bind(body.source_id.trim())
-            .fetch_one(&state.db)
-            .await?
+            sqlx::query_scalar("SELECT id FROM foods WHERE source = $1 AND source_id = $2")
+                .bind(&body.source)
+                .bind(body.source_id.trim())
+                .fetch_one(&mut *tx)
+                .await?
         }
     };
 
+    // Portions are refreshed on every import, edited food or not: they sit
+    // outside the revision model, so there is no correction to undo. What a
+    // person typed in is theirs — a provider's row never overwrites a label
+    // somebody else already gave a weight to.
+    if !portions.is_empty() {
+        let labels: Vec<&str> = portions.iter().map(|p| p.label.as_str()).collect();
+        let grams: Vec<f64> = portions.iter().map(|p| p.grams).collect();
+        let orders: Vec<i32> = (0..portions.len() as i32).collect();
+        sqlx::query(
+            "INSERT INTO food_portions (food_id, label, grams, source, sort_order)
+             SELECT $1, label, grams, $2, sort_order
+             FROM UNNEST($3::text[], $4::float8[], $5::int[]) AS u(label, grams, sort_order)
+             ON CONFLICT (food_id, label) DO UPDATE
+                SET grams = EXCLUDED.grams, sort_order = EXCLUDED.sort_order
+                WHERE food_portions.source <> 'user'",
+        )
+        .bind(food_id)
+        .bind(&body.source)
+        .bind(&labels)
+        .bind(&grams)
+        .bind(&orders)
+        .execute(&mut *tx)
+        .await?;
+    }
+
+    tx.commit().await?;
+
+    // Read back after the commit so the portions just written are on it.
+    let row = load_food(&state, food_id).await?;
+
     Ok(Json(detail(&state, row, user.id).await?))
+}
+
+#[utoipa::path(
+    get, path = "/api/v1/foods/recent", tag = "foods",
+    security(("bearer" = [])),
+    params(("limit" = Option<i64>, Query, description = "How many, 1–50, default 12")),
+    responses((status = 200, description = "What you logged most recently, most often first among ties", body = Vec<RecentItem>))
+)]
+pub async fn recent(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    Query(q): Query<RecentQuery>,
+) -> ApiResult<Json<Vec<RecentItem>>> {
+    let limit = q.limit.unwrap_or(12).clamp(1, 50);
+
+    // One pass over the diary: each food or recipe once, with when it was
+    // last logged, how often, and the amount from that last time. Recency
+    // leads and frequency breaks the tie, because "what did I have
+    // yesterday" is the question the picker is usually answering, and among
+    // several things from the same day the habitual one belongs first.
+    #[derive(sqlx::FromRow)]
+    struct Row {
+        food_id: Option<Uuid>,
+        recipe_id: Option<Uuid>,
+        times_logged: i64,
+        last_logged_on: chrono::NaiveDate,
+        last_quantity_g: Option<f64>,
+        last_recipe_servings: Option<f64>,
+    }
+
+    let rows: Vec<Row> = sqlx::query_as(
+        "SELECT d.food_id, d.recipe_id,
+                count(*) AS times_logged,
+                max(d.logged_on) AS last_logged_on,
+                (array_agg(d.quantity_g ORDER BY d.logged_on DESC, d.created_at DESC))[1]
+                    AS last_quantity_g,
+                (array_agg(d.recipe_servings ORDER BY d.logged_on DESC, d.created_at DESC))[1]
+                    AS last_recipe_servings
+         FROM diary_entries d
+         WHERE d.user_id = $1
+         GROUP BY d.food_id, d.recipe_id
+         ORDER BY last_logged_on DESC, times_logged DESC, max(d.created_at) DESC
+         LIMIT $2",
+    )
+    .bind(user.id)
+    .bind(limit)
+    .fetch_all(&state.db)
+    .await?;
+
+    let food_ids: Vec<Uuid> = rows.iter().filter_map(|r| r.food_id).collect();
+    let recipe_ids: Vec<Uuid> = rows.iter().filter_map(|r| r.recipe_id).collect();
+
+    let foods: Vec<Food> = sqlx::query_as(&format!(
+        "SELECT {COLUMNS} FROM foods WHERE foods.id = ANY($1)"
+    ))
+    .bind(&food_ids)
+    .fetch_all(&state.db)
+    .await?;
+
+    #[derive(sqlx::FromRow)]
+    struct RecipeRow {
+        id: Uuid,
+        name: String,
+        servings: f64,
+        calories_kcal: f64,
+        protein_g: f64,
+        carbs_g: f64,
+        fat_g: f64,
+        fiber_g: f64,
+        sugar_g: f64,
+        saturated_fat_g: f64,
+        sodium_mg: f64,
+        untracked_count: i64,
+    }
+
+    // `recipe_totals` again, so the preview here says what the recipe page
+    // and the diary say.
+    let recipes: Vec<RecipeRow> = sqlx::query_as(
+        "SELECT r.id, r.name, r.servings,
+                t.calories_kcal, t.protein_g, t.carbs_g, t.fat_g, t.fiber_g, t.sugar_g,
+                t.saturated_fat_g, t.sodium_mg, t.untracked_count
+         FROM recipes r
+         LEFT JOIN LATERAL (SELECT * FROM recipe_totals(r.id)) t ON TRUE
+         WHERE r.id = ANY($1)",
+    )
+    .bind(&recipe_ids)
+    .fetch_all(&state.db)
+    .await?;
+
+    let items = rows
+        .into_iter()
+        .filter_map(|r| {
+            let food = r
+                .food_id
+                .and_then(|id| foods.iter().find(|f| f.id == id).cloned());
+            let recipe = r.recipe_id.and_then(|id| {
+                recipes.iter().find(|x| x.id == id).map(|x| RecentRecipe {
+                    id: x.id,
+                    name: x.name.clone(),
+                    servings: x.servings,
+                    per_serving: Nutrients {
+                        calories_kcal: x.calories_kcal,
+                        protein_g: x.protein_g,
+                        carbs_g: x.carbs_g,
+                        fat_g: x.fat_g,
+                        fiber_g: x.fiber_g,
+                        sugar_g: x.sugar_g,
+                        saturated_fat_g: x.saturated_fat_g,
+                        sodium_mg: x.sodium_mg,
+                    }
+                    .scaled(1.0 / x.servings)
+                    .rounded(),
+                    untracked_count: x.untracked_count,
+                })
+            });
+            // Both foreign keys are ON DELETE RESTRICT, so a diary entry
+            // whose target is gone cannot exist; the filter is belt and
+            // braces rather than a case anyone should see.
+            if food.is_none() && recipe.is_none() {
+                return None;
+            }
+            Some(RecentItem {
+                food,
+                recipe,
+                last_quantity_g: r.last_quantity_g,
+                last_recipe_servings: r.last_recipe_servings,
+                last_logged_on: r.last_logged_on,
+                times_logged: r.times_logged,
+            })
+        })
+        .collect();
+
+    Ok(Json(items))
+}
+
+#[utoipa::path(
+    post, path = "/api/v1/foods/{id}/portions", tag = "foods",
+    security(("bearer" = [])),
+    params(("id" = Uuid, Path, description = "Food id")),
+    request_body = AddPortionRequest,
+    responses(
+        (status = 201, description = "The food, portions included", body = FoodDetail),
+        (status = 400, body = crate::error::ErrorBody),
+        (status = 404, body = crate::error::ErrorBody),
+        (status = 409, description = "This food already has a portion with that label", body = crate::error::ErrorBody),
+    )
+)]
+pub async fn add_portion(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    Path(id): Path<Uuid>,
+    Json(body): Json<AddPortionRequest>,
+) -> ApiResult<(StatusCode, Json<FoodDetail>)> {
+    body.validate()?;
+    let label = body.label.trim();
+    if label.is_empty() {
+        return Err(ApiError::bad_request("label must not be blank"));
+    }
+    load_food(&state, id).await?;
+
+    // Open to anyone signed in, like the food itself. A portion is a measure
+    // of the food, not a claim about its nutrition, so it is not versioned:
+    // a wrong one is a wrong gram figure the person sees as they pick it,
+    // and the fix is to remove it and add the right one.
+    sqlx::query(
+        "INSERT INTO food_portions (food_id, label, grams, source, sort_order)
+         VALUES ($1, $2, $3, 'user',
+                 (SELECT coalesce(max(sort_order), -1) + 1 FROM food_portions WHERE food_id = $1))",
+    )
+    .bind(id)
+    .bind(label)
+    .bind(body.grams)
+    .execute(&state.db)
+    .await
+    .map_err(|e| match e {
+        sqlx::Error::Database(ref db) if db.is_unique_violation() => {
+            ApiError::Conflict("this food already has a portion with that label".into())
+        }
+        other => other.into(),
+    })?;
+
+    let food = load_food(&state, id).await?;
+    Ok((
+        StatusCode::CREATED,
+        Json(detail(&state, food, user.id).await?),
+    ))
+}
+
+#[utoipa::path(
+    delete, path = "/api/v1/foods/{id}/portions/{portion_id}", tag = "foods",
+    security(("bearer" = [])),
+    params(
+        ("id" = Uuid, Path, description = "Food id"),
+        ("portion_id" = Uuid, Path, description = "Portion id"),
+    ),
+    responses(
+        (status = 200, description = "The food, without that portion", body = FoodDetail),
+        (status = 404, body = crate::error::ErrorBody),
+    )
+)]
+pub async fn remove_portion(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    Path((id, portion_id)): Path<(Uuid, Uuid)>,
+) -> ApiResult<Json<FoodDetail>> {
+    let result = sqlx::query("DELETE FROM food_portions WHERE id = $1 AND food_id = $2")
+        .bind(portion_id)
+        .bind(id)
+        .execute(&state.db)
+        .await?;
+    if result.rows_affected() == 0 {
+        return Err(ApiError::NotFound("portion"));
+    }
+
+    let food = load_food(&state, id).await?;
+    Ok(Json(detail(&state, food, user.id).await?))
 }
 
 #[utoipa::path(

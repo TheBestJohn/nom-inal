@@ -1,6 +1,6 @@
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum::Router;
 use chrono::{Duration, NaiveDate, Utc};
 use serde::Deserialize;
@@ -10,8 +10,8 @@ use validator::Validate;
 
 use crate::auth::CurrentUser;
 use crate::domain::diary::{
-    CreateDiaryEntryRequest, DailyTotal, DiaryDay, DiaryEntry, DiaryRow, DiarySummary, MealGroup,
-    PatchDiaryEntryRequest,
+    CopyDiaryRequest, CopyDiaryResult, CreateDiaryEntryRequest, DailyTotal, DiaryDay, DiaryEntry,
+    DiaryRow, DiarySummary, MealGroup, PatchDiaryEntryRequest,
 };
 use crate::domain::nutrients::Nutrients;
 use crate::domain::target::TargetProgress;
@@ -23,6 +23,7 @@ pub fn router() -> Router<AppState> {
     Router::new()
         .route("/", get(list).post(create))
         .route("/day", get(day))
+        .route("/copy", post(copy))
         .route("/summary", get(summary))
         .route("/{id}", get(get_one).patch(patch).delete(delete))
 }
@@ -389,6 +390,68 @@ pub async fn create(
         StatusCode::CREATED,
         Json(load_entry(&state, user.id, id).await?),
     ))
+}
+
+#[utoipa::path(
+    post, path = "/api/v1/diary/copy", tag = "diary",
+    security(("bearer" = [])),
+    request_body = CopyDiaryRequest,
+    responses(
+        (status = 200, description = "What was copied. `copied` is 0 when the source had nothing.", body = CopyDiaryResult),
+        (status = 400, body = crate::error::ErrorBody),
+    )
+)]
+pub async fn copy(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    Json(body): Json<CopyDiaryRequest>,
+) -> ApiResult<Json<CopyDiaryResult>> {
+    // A day copied onto itself would double every entry, which nobody means.
+    if body.from_date == body.to_date {
+        return Err(ApiError::bad_request("from_date and to_date must differ"));
+    }
+    let meal = body.meal.as_deref().map(|m| normalize_meal(Some(m)));
+
+    // One INSERT ... SELECT, so the copy is atomic by construction: either
+    // every entry of the source lands on the target day or none does. Amounts
+    // and targets carry over as they are — the same food in the same grams,
+    // the same recipe in the same servings — and each new row is a fresh
+    // entry with its own id and timestamps, since it is a new fact about a
+    // different day, not a link to the old one.
+    let ids: Vec<Uuid> = sqlx::query_scalar(
+        "INSERT INTO diary_entries
+             (user_id, logged_on, meal, food_id, recipe_id, quantity_g, recipe_servings)
+         SELECT user_id, $3, meal, food_id, recipe_id, quantity_g, recipe_servings
+         FROM diary_entries
+         WHERE user_id = $1 AND logged_on = $2 AND ($4::text IS NULL OR meal = $4)
+         ORDER BY created_at ASC
+         RETURNING id",
+    )
+    .bind(user.id)
+    .bind(body.from_date)
+    .bind(body.to_date)
+    .bind(meal.as_deref())
+    .fetch_all(&state.db)
+    .await?;
+
+    let rows: Vec<DiaryRow> = sqlx::query_as(&format!(
+        "{ENTRY_SELECT}
+         WHERE d.user_id = $1 AND d.id = ANY($2)
+         ORDER BY d.created_at ASC"
+    ))
+    .bind(user.id)
+    .bind(&ids)
+    .fetch_all(&state.db)
+    .await?;
+
+    let entries: Vec<DiaryEntry> = rows.into_iter().map(Into::into).collect();
+    Ok(Json(CopyDiaryResult {
+        from_date: body.from_date,
+        to_date: body.to_date,
+        meal,
+        copied: entries.len(),
+        entries,
+    }))
 }
 
 #[utoipa::path(

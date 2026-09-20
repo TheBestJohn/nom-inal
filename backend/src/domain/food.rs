@@ -1,4 +1,4 @@
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
 use utoipa::ToSchema;
@@ -7,19 +7,43 @@ use validator::Validate;
 
 use super::nutrients::Nutrients;
 
-/// Every column `Food` reads, in one place.
+/// Every column `Food` reads, in one place, qualified by a table name.
 ///
 /// This list had been copied into three route modules, and adding the
 /// provenance columns broke two of them at runtime — `query_as` is checked
 /// against the database, not the compiler, so a stale list is a 500 rather
 /// than a build error. Defining it beside the struct means the next column
 /// only has to be added once.
-pub const FOOD_COLUMNS: &str = r#"
-    id, source, source_id, name, brand, upc, calories_kcal, protein_g, carbs_g, fat_g,
-    fiber_g, sugar_g, saturated_fat_g, sodium_mg, serving_size_g, serving_label,
-    variant_of, variant_label, revision, verified_at, disputed_at, nutrient_basis,
-    created_by, created_at, updated_at
-"#;
+///
+/// It is a macro rather than a string because the last column is not a
+/// column: `portions` is the food's household measures, aggregated from
+/// `food_portions` in a correlated subquery so a food arrives whole from a
+/// list, a detail read or a `RETURNING` clause alike. That subquery has to
+/// name the row it belongs to, and the two statements that alias `foods` as
+/// `f` cannot say `foods.id`, so the table name is a parameter.
+#[rustfmt::skip]
+macro_rules! food_columns {
+    ($t:literal) => {
+        concat!(
+            $t, ".id, ", $t, ".source, ", $t, ".source_id, ", $t, ".name, ", $t, ".brand, ",
+            $t, ".upc, ", $t, ".calories_kcal, ", $t, ".protein_g, ", $t, ".carbs_g, ",
+            $t, ".fat_g, ", $t, ".fiber_g, ", $t, ".sugar_g, ", $t, ".saturated_fat_g, ",
+            $t, ".sodium_mg, ", $t, ".serving_size_g, ", $t, ".serving_label, ",
+            $t, ".variant_of, ", $t, ".variant_label, ", $t, ".revision, ",
+            $t, ".verified_at, ", $t, ".disputed_at, ", $t, ".nutrient_basis, ",
+            $t, ".created_by, ", $t, ".created_at, ", $t, ".updated_at, ",
+            "(SELECT coalesce(json_agg(json_build_object(",
+            "'id', p.id, 'label', p.label, 'grams', p.grams, 'source', p.source) ",
+            "ORDER BY p.sort_order, lower(p.label)), '[]'::json) ",
+            "FROM food_portions p WHERE p.food_id = ", $t, ".id) AS portions"
+        )
+    };
+}
+
+pub(crate) use food_columns;
+
+/// The list for any statement that reads `foods` under its own name.
+pub const FOOD_COLUMNS: &str = food_columns!("foods");
 
 /// A food as stored: all nutrient figures are **per 100 g**.
 #[derive(Debug, Clone, Serialize, FromRow, ToSchema)]
@@ -64,6 +88,24 @@ pub struct Food {
     pub created_by: Option<Uuid>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    /// Household measures of this food — "1 cup", "1 slice" — each with its
+    /// weight, so a picker can offer them beside grams. What gets logged is
+    /// still grams; a portion is a way of arriving at the number.
+    #[sqlx(json)]
+    pub portions: Vec<FoodPortion>,
+}
+
+/// One household measure of a food.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct FoodPortion {
+    pub id: Uuid,
+    /// As it reads in the picker: "1 cup", "1 medium", "2 tbsp".
+    pub label: String,
+    pub grams: f64,
+    /// `usda` or `off` for a measure the provider published, `user` for one
+    /// somebody typed in. A re-import refreshes the former and never the
+    /// latter.
+    pub source: String,
 }
 
 impl Food {
@@ -341,6 +383,19 @@ pub struct ExternalFood {
     pub sodium_mg: Option<f64>,
     pub serving_size_g: f64,
     pub serving_label: Option<String>,
+    /// Household measures the provider publishes. USDA's detail record
+    /// carries them as `foodPortions`; a search hit does not, and a client
+    /// that predates this field sends nothing, so the import fills them in
+    /// from the detail record itself when they are missing.
+    #[serde(default)]
+    pub portions: Vec<ExternalPortion>,
+}
+
+/// A provider's household measure, before it has a row.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+pub struct ExternalPortion {
+    pub label: String,
+    pub grams: f64,
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
@@ -364,6 +419,43 @@ pub struct BarcodeLookup {
     pub upc: String,
     pub local: Option<FoodDetail>,
     pub external: Option<ExternalFood>,
+}
+
+/// Something you have logged before, with how you logged it last time.
+///
+/// Exactly one of `food` and `recipe` is set: a recipe is logged like a food
+/// and belongs in the same list, so it is here rather than behind a second
+/// endpoint the picker would have to merge by hand.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct RecentItem {
+    pub food: Option<Food>,
+    pub recipe: Option<RecentRecipe>,
+    /// The grams logged most recently, for a food.
+    pub last_quantity_g: Option<f64>,
+    /// The servings logged most recently, for a recipe.
+    pub last_recipe_servings: Option<f64>,
+    pub last_logged_on: NaiveDate,
+    /// How many diary entries this item has, ever.
+    pub times_logged: i64,
+}
+
+/// The part of a recipe the picker needs to log it: its name, and one
+/// serving's nutrients for the preview.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct RecentRecipe {
+    pub id: Uuid,
+    pub name: String,
+    pub servings: f64,
+    pub per_serving: Nutrients,
+    /// Ingredients, counted through nesting, that carry no nutrition.
+    pub untracked_count: i64,
+}
+
+#[derive(Debug, Default, Deserialize, ToSchema)]
+#[serde(default)]
+pub struct RecentQuery {
+    /// Page size, 1–50. Defaults to 12.
+    pub limit: Option<i64>,
 }
 
 // ---------------------------------------------------------------------------
@@ -509,6 +601,15 @@ pub struct RevertRequest {
     pub revision: i32,
     #[validate(length(max = 300, message = "must be at most 300 characters"))]
     pub reason: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Validate, ToSchema)]
+pub struct AddPortionRequest {
+    /// "1 cup", "1 slice", "1 mug". Unique per food.
+    #[validate(length(min = 1, max = 60, message = "must be 1-60 characters"))]
+    pub label: String,
+    #[validate(range(min = 0.1, max = 50000.0, message = "must be between 0.1 and 50000 g"))]
+    pub grams: f64,
 }
 
 /// One food in the portable export format. Deliberately not `Food`: internal

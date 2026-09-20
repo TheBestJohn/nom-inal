@@ -5,7 +5,7 @@
 
 use serde::Deserialize;
 
-use crate::domain::food::ExternalFood;
+use crate::domain::food::{ExternalFood, ExternalPortion};
 use crate::error::ApiError;
 
 // FoodData Central nutrient ids.
@@ -201,6 +201,85 @@ fn map_food(f: SearchFood) -> ExternalFood {
         sodium_mg: nutrient(n, N_SODIUM),
         serving_size_g: serving_grams(f.serving_size, f.serving_size_unit.as_deref()),
         serving_label: f.household_serving_full_text,
+        // Search hits are abridged and carry no `foodPortions`; the import
+        // fetches the detail record to fill these in.
+        portions: Vec::new(),
+    }
+}
+
+/// USDA's household measures for a food, as `label` + grams.
+///
+/// The three datasets spell a portion differently. Foundation and Survey
+/// foods give a `portionDescription` ("1 cup, chopped"); SR Legacy leaves it
+/// blank and puts the unit in `modifier` with `measureUnit` set to
+/// "undetermined"; Branded foods have none at all. The label is assembled
+/// from whichever parts are present, and anything without a positive
+/// `gramWeight` is dropped, because a portion is only useful as a weight.
+fn map_portions(raw: &serde_json::Value) -> Vec<ExternalPortion> {
+    let Some(list) = raw.get("foodPortions").and_then(|v| v.as_array()) else {
+        return Vec::new();
+    };
+
+    let text = |v: Option<&serde_json::Value>| {
+        v.and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+    };
+
+    let mut out: Vec<ExternalPortion> = Vec::new();
+    for item in list {
+        let Some(grams) = item.get("gramWeight").and_then(|v| v.as_f64()) else {
+            continue;
+        };
+        if !grams.is_finite() || grams <= 0.0 {
+            continue;
+        }
+
+        let description =
+            text(item.get("portionDescription")).filter(|d| d != "Quantity not specified");
+        let label = match description {
+            Some(d) => d,
+            None => {
+                let amount = item.get("amount").and_then(|v| v.as_f64()).unwrap_or(1.0);
+                let unit = text(item.get("measureUnit").and_then(|u| u.get("name")))
+                    .filter(|u| u != "undetermined");
+                let modifier = text(item.get("modifier"));
+                let mut label = format_amount(amount);
+                match (unit, modifier) {
+                    (Some(u), Some(m)) => {
+                        label.push(' ');
+                        label.push_str(&u);
+                        label.push_str(", ");
+                        label.push_str(&m);
+                    }
+                    (Some(u), None) | (None, Some(u)) => {
+                        label.push(' ');
+                        label.push_str(&u);
+                    }
+                    (None, None) => continue,
+                }
+                label
+            }
+        };
+
+        // The unique key is (food, label), so a duplicate here would fail
+        // the whole import over a measure that says nothing new.
+        if out.iter().any(|p| p.label.eq_ignore_ascii_case(&label)) {
+            continue;
+        }
+        out.push(ExternalPortion { label, grams });
+    }
+    out
+}
+
+/// "1", "0.5", "1.25": trailing zeros dropped, never more than two decimals.
+fn format_amount(amount: f64) -> String {
+    let rounded = (amount * 100.0).round() / 100.0;
+    if rounded.fract() == 0.0 {
+        format!("{}", rounded as i64)
+    } else {
+        format!("{rounded}")
     }
 }
 
@@ -256,6 +335,7 @@ fn map_detail(raw: &serde_json::Value) -> ExternalFood {
             raw.get("servingSizeUnit").and_then(|v| v.as_str()),
         ),
         serving_label: str_field("householdServingFullText"),
+        portions: map_portions(raw),
     }
 }
 
@@ -332,6 +412,51 @@ mod tests {
         assert_eq!(food.serving_size_g, 100.0);
         // Nutrients the payload omits stay absent rather than becoming 0.
         assert_eq!(food.fiber_g, None);
+    }
+
+    #[test]
+    fn portions_are_labelled_from_whichever_parts_the_dataset_gives() {
+        let raw = serde_json::json!({
+            "fdcId": 1,
+            "description": "Test",
+            "foodPortions": [
+                // Foundation / Survey: a description ready to use.
+                {"gramWeight": 240.0, "amount": 1, "portionDescription": "1 cup",
+                 "measureUnit": {"name": "cup"}},
+                // SR Legacy: unit undetermined, the measure in `modifier`.
+                {"gramWeight": 15.0, "amount": 1, "portionDescription": "",
+                 "measureUnit": {"name": "undetermined"}, "modifier": "tbsp"},
+                // Unit and modifier both present.
+                {"gramWeight": 120.0, "amount": 0.5, "measureUnit": {"name": "cup"},
+                 "modifier": "chopped"},
+                // The placeholder USDA uses when it does not know.
+                {"gramWeight": 100.0, "amount": 1, "portionDescription": "Quantity not specified",
+                 "measureUnit": {"name": "undetermined"}},
+                // A weightless measure is no use as a portion.
+                {"gramWeight": 0.0, "amount": 1, "portionDescription": "1 pinch"},
+                // A repeat of a label already taken.
+                {"gramWeight": 245.0, "amount": 1, "portionDescription": "1 CUP"}
+            ]
+        });
+        let portions = map_detail(&raw).portions;
+        let labels: Vec<(&str, f64)> = portions
+            .iter()
+            .map(|p| (p.label.as_str(), p.grams))
+            .collect();
+        assert_eq!(
+            labels,
+            vec![
+                ("1 cup", 240.0),
+                ("1 tbsp", 15.0),
+                ("0.5 cup, chopped", 120.0)
+            ]
+        );
+    }
+
+    #[test]
+    fn a_record_without_portions_imports_with_none() {
+        let raw = serde_json::json!({"fdcId": 1, "description": "Plain"});
+        assert!(map_detail(&raw).portions.is_empty());
     }
 
     #[test]

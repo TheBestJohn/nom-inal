@@ -69,6 +69,7 @@ pub async fn update_profile(
             chart_nutrients = COALESCE($10, chart_nutrients),
             chart_mode = COALESCE($11, chart_mode),
             tracking_focus = COALESCE($12, tracking_focus),
+            units = COALESCE($13, units),
             updated_at = now()
          WHERE id = $1
          RETURNING {USER_COLUMNS}"
@@ -93,6 +94,7 @@ pub async fn update_profile(
     )
     .bind(body.chart_mode.map(|m| m.as_str()))
     .bind(body.tracking_focus.map(|f| f.as_str()))
+    .bind(body.units.map(|u| u.as_str()))
     .fetch_optional(&state.db)
     .await?
     .ok_or(ApiError::NotFound("user"))?;
