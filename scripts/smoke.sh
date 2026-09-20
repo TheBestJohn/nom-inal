@@ -420,6 +420,168 @@ expect "an empty day shares nothing, not NaN" \
 curl -fsS -X PATCH "$BASE/profile" -H "$AUTH" -H 'content-type: application/json' \
   -d '{"shown_nutrients":["calories_kcal","protein_g","carbs_g","fat_g"],"chart_nutrients":["calories_kcal"]}' >/dev/null
 
+echo "== fully logged days"
+# A diary cannot tell a fast day from a day someone stopped logging after
+# breakfast, and the estimator below must not be fed the second kind. The
+# flag is the one person who knows saying which it was.
+expect "a day starts not complete" \
+  "$(curl -fsS "$BASE/diary/day?date=2026-01-15" -H "$AUTH" | j "['complete']")" "False"
+expect "marking it is an upsert" \
+  "$(curl -fsS -X PUT "$BASE/diary/day/2026-01-15/complete" -H "$AUTH" -H 'content-type: application/json' \
+      -d '{"complete":true}' | j "['complete']")" "True"
+expect "and the day says so" \
+  "$(curl -fsS "$BASE/diary/day?date=2026-01-15" -H "$AUTH" | j "['complete']")" "True"
+# Nothing logged and everything logged: a fast day. It is listed, with zero
+# entries, because it is data; dropping it would make the flag invisible.
+curl -fsS -X PUT "$BASE/diary/day/2026-01-16/complete" -H "$AUTH" -H 'content-type: application/json' -d '{"complete":true}' >/dev/null
+SUM=$(curl -fsS "$BASE/diary/summary?from=2026-01-01&to=2026-01-31" -H "$AUTH")
+expect "the summary lists the fast day with nothing in it" \
+  "$(echo "$SUM" | j " and [(x['date'], x['entry_count'], x['complete']) for x in d['days']]")" \
+  "[('2026-01-15', 2, True), ('2026-01-16', 0, True)]"
+expect "and counts complete days"             "$(echo "$SUM" | j "['complete_day_count']")" "2"
+expect "while the average stays over logged days" "$(echo "$SUM" | j "['logged_day_count']")" "1"
+expect "unmarking a day is the same call" \
+  "$(curl -fsS -X PUT "$BASE/diary/day/2026-01-16/complete" -H "$AUTH" -H 'content-type: application/json' \
+      -d '{"complete":false}' | j "['complete']")" "False"
+expect "an unmarked empty day is an absence again" \
+  "$(curl -fsS "$BASE/diary/summary?from=2026-01-01&to=2026-01-31" -H "$AUTH" | j " and [x['date'] for x in d['days']]")" "['2026-01-15']"
+status "a day in the future cannot have been logged" 400 -X PUT "$BASE/diary/day/2999-01-01/complete" -H "$AUTH" -H 'content-type: application/json' -d '{"complete":true}'
+
+echo "== estimators"
+# Expenditure by energy balance: intake on complete days, less what the scale
+# stored. A fresh account, so the window holds exactly what this section
+# puts in it, and dates relative to today because the window ends today.
+EMAIL_EST="smoke-est-$(date +%s)-$RANDOM@example.test"
+AUTH_EST="Authorization: Bearer $(curl -fsS -X POST "$BASE/auth/register" -H 'content-type: application/json' \
+  -d "{\"email\":\"$EMAIL_EST\",\"password\":\"$PASSWORD\",\"display_name\":\"Estimator\"}" | j "['access_token']")"
+curl -fsS -X PATCH "$BASE/profile" -H "$AUTH_EST" -H 'content-type: application/json' \
+  -d '{"sex":"male","birth_date":"1990-06-15","height_cm":180,"activity_level":"moderate","goal":"cut"}' >/dev/null
+TODAY=$(date -u +%F)
+daysago()   { date -u -d "$TODAY -$1 days" +%F; }
+daysahead() { date -u -d "$TODAY +$1 days" +%F; }
+
+# Nothing yet: not ready, and every shortfall named. `ready` is the field to
+# branch on; `estimate` is present exactly when it is true.
+TDEE=$(curl -fsS "$BASE/estimates/tdee" -H "$AUTH_EST")
+expect "with nothing logged the estimate is not ready" "$(echo "$TDEE" | j "['ready']")" "False"
+expect "and no estimate is offered on thin data"        "$(echo "$TDEE" | j "['estimate']")" "None"
+expect "it says what it has" \
+  "$(echo "$TDEE" | j "['have']")" "{'complete_days': 0, 'weigh_ins': 0, 'span_days': 0}"
+expect "and what it needs" \
+  "$(echo "$TDEE" | j "['need']")" "{'complete_days': 7, 'weigh_ins': 2, 'span_days': 7}"
+expect "in a sentence" \
+  "$(echo "$TDEE" | j "['reason']")" "Needs 7 more days marked as fully logged and 2 more weigh-ins."
+expect "the formula names what it is missing too" "$(echo "$TDEE" | j "['formula_missing']")" "['weight']"
+status "the window has a floor"   400 "$BASE/estimates/tdee?days=3" -H "$AUTH_EST"
+status "and a ceiling"            400 "$BASE/estimates/tdee?days=400" -H "$AUTH_EST"
+
+# Twenty-eight complete days ending today: 26 at 1850 kcal, one fast day at
+# nothing, one at 3700 — a mean of exactly 1850. A 29th day, outside the
+# window and never marked, at 5000 kcal is the poison the flag exists to
+# keep out.
+CHOW=$(curl -fsS -X POST "$BASE/foods" -H "$AUTH_EST" -H 'content-type: application/json' \
+  -d '{"name":"Estimator chow","calories_kcal":500,"protein_g":25,"carbs_g":50,"fat_g":20,"serving_size_g":100}' | j "['id']")
+chow() { # chow <date> <grams>
+  curl -fsS -X POST "$BASE/diary" -H "$AUTH_EST" -H 'content-type: application/json' \
+    -d "{\"logged_on\":\"$1\",\"meal\":\"lunch\",\"food_id\":\"$CHOW\",\"quantity_g\":$2}" >/dev/null
+}
+for i in $(seq 0 27); do
+  D=$(daysago "$i")
+  if   [ "$i" -eq 3 ];  then :                 # a fast day: nothing to log
+  elif [ "$i" -eq 10 ]; then chow "$D" 740     # 3700 kcal
+  else                       chow "$D" 370     # 1850 kcal
+  fi
+  curl -fsS -X PUT "$BASE/diary/day/$D/complete" -H "$AUTH_EST" -H 'content-type: application/json' -d '{"complete":true}' >/dev/null
+done
+chow "$(daysago 28)" 1000                      # 5000 kcal, never marked
+
+TDEE=$(curl -fsS "$BASE/estimates/tdee" -H "$AUTH_EST")
+expect "complete days alone are not enough" \
+  "$(echo "$TDEE" | j " and (d['ready'], d['have']['complete_days'], d['reason'])")" "(False, 28, 'Needs 2 more weigh-ins.')"
+curl -fsS -X POST "$BASE/weights" -H "$AUTH_EST" -H 'content-type: application/json' -d "{\"recorded_on\":\"$(daysago 27)\",\"weight_kg\":85.0}" >/dev/null
+expect "one weigh-in is not a trend" \
+  "$(curl -fsS "$BASE/estimates/tdee" -H "$AUTH_EST" | j " and (d['ready'], d['have']['weigh_ins'], d['reason'])")" "(False, 1, 'Needs 1 more weigh-in.')"
+NEAR=$(curl -fsS -X POST "$BASE/weights" -H "$AUTH_EST" -H 'content-type: application/json' -d "{\"recorded_on\":\"$(daysago 24)\",\"weight_kg\":84.8}" | j "['id']")
+expect "two weigh-ins three days apart is not one either" \
+  "$(curl -fsS "$BASE/estimates/tdee" -H "$AUTH_EST" | j " and (d['ready'], d['have']['span_days'], d['reason'])")" \
+  "(False, 3, 'Needs weigh-ins at least 7 days apart (yours span 3).')"
+curl -fsS -X DELETE "$BASE/weights/$NEAR" -H "$AUTH_EST" >/dev/null
+
+# Weigh-ins on an exact line: 0.4 kg a week off, four points a week apart.
+for pair in "20 84.6" "13 84.2" "6 83.8"; do
+  set -- $pair
+  curl -fsS -X POST "$BASE/weights" -H "$AUTH_EST" -H 'content-type: application/json' -d "{\"recorded_on\":\"$(daysago "$1")\",\"weight_kg\":$2}" >/dev/null
+done
+TDEE=$(curl -fsS "$BASE/estimates/tdee" -H "$AUTH_EST")
+expect "the estimate is ready"                     "$(echo "$TDEE" | j "['ready']")" "True"
+expect "and says so without a reason"              "$(echo "$TDEE" | j "['reason']")" "None"
+expect "the mean is over complete days, fast day included" "$(echo "$TDEE" | j "['estimate']['mean_intake_kcal']")" "1850.0"
+expect "the trend is 0.4 kg a week off"            "$(echo "$TDEE" | j "['estimate']['weight_change_kg_per_week']")" "-0.4"
+expect "so expenditure is 1850 + 0.4/7 × 7700"     "$(echo "$TDEE" | j "['estimate']['tdee_kcal']")" "2290.0"
+expect "a 440 kcal deficit"                        "$(echo "$TDEE" | j "['estimate']['energy_balance_kcal_per_day']")" "-440.0"
+expect "the fitted line's ends are reported"       "$(echo "$TDEE" | j " and (d['estimate']['trend_start_kg'], d['estimate']['trend_end_kg'])")" "(85.0, 83.8)"
+expect "28 complete days and 4 weigh-ins is good"  "$(echo "$TDEE" | j "['estimate']['confidence']")" "good"
+expect "the budget re-bases the goal on the measured figure: 2290 − 500, to the nearest ten" \
+  "$(echo "$TDEE" | j " and (d['estimate']['goal'], d['estimate']['goal_adjustment_kcal'], d['estimate']['budget_kcal'], d['estimate']['floored_at_minimum'])")" "('cut', -500.0, 1790.0, False)"
+expect "the formula sits beside it, off the latest weigh-in" \
+  "$(echo "$TDEE" | j " and (d['formula']['weight_kg'], d['formula']['tdee_kcal'] == round(d['formula']['bmr_kcal'] * 1.55))")" "(83.8, True)"
+expect "the unmarked 5000 kcal day is ignored even inside a wider window" \
+  "$(curl -fsS "$BASE/estimates/tdee?days=35" -H "$AUTH_EST" | j " and (d['have']['complete_days'], d['estimate']['mean_intake_kcal'])")" "(28, 1850.0)"
+expect "a week's window has one weigh-in and says so" \
+  "$(curl -fsS "$BASE/estimates/tdee?days=7" -H "$AUTH_EST" | j " and (d['ready'], d['have'], d['reason'])")" \
+  "(False, {'complete_days': 7, 'weigh_ins': 1, 'span_days': 0}, 'Needs 1 more weigh-in.')"
+expect "a fortnight is ready but low confidence: only two weigh-ins" \
+  "$(curl -fsS "$BASE/estimates/tdee?days=14" -H "$AUTH_EST" | j " and (d['ready'], d['estimate']['tdee_kcal'], d['estimate']['confidence'])")" "(True, 2290.0, 'low')"
+
+# Goal projection: the same trend, extended to the target weight.
+PROJ=$(curl -fsS "$BASE/estimates/projection" -H "$AUTH_EST")
+expect "the trend is ready"                    "$(echo "$PROJ" | j "['ready']")" "True"
+expect "but there is no target weight yet"     "$(echo "$PROJ" | j " and (d['reached_on'], d['reached_reason'])")" "(None, 'no_target_weight')"
+expect "the trend is reported regardless" \
+  "$(echo "$PROJ" | j " and (d['trend']['as_of'], d['trend']['current_kg'], d['trend']['rate_kg_per_week'], d['trend']['caution'])")" \
+  "('$(daysago 6)', 83.8, -0.4, False)"
+expect "as is the caution line, 1% of body weight a week" "$(echo "$PROJ" | j "['trend']['caution_threshold_kg_per_week']")" "0.84"
+expect "a by-date without a target says why" \
+  "$(curl -fsS "$BASE/estimates/projection?by=$(daysahead 30)" -H "$AUTH_EST" | j " and (d['by'], d['by_reason'])")" "(None, 'no_target_weight')"
+
+curl -fsS -X PATCH "$BASE/profile" -H "$AUTH_EST" -H 'content-type: application/json' -d '{"target_weight_kg":78}' >/dev/null
+PROJ=$(curl -fsS "$BASE/estimates/projection" -H "$AUTH_EST")
+# 83.8 → 78 at 0.4 kg a week is 101.5 days from the last weigh-in, six days
+# ago: reached on day 102, which is 96 days from today.
+expect "5.8 kg at 0.4 kg a week is 102 days"   "$(echo "$PROJ" | j "['days_to_target']")" "102"
+expect "counted from the last weigh-in"        "$(echo "$PROJ" | j "['reached_on']")" "$(daysahead 96)"
+expect "with no caution at this rate"          "$(echo "$PROJ" | j " and (d['trend']['caution'], d['reached_reason'])")" "(False, None)"
+
+# What a deadline would take: 36 days from the last weigh-in is 1241 kcal a
+# day under expenditure, 1.13 kg a week, past the caution line, and an
+# intake that lands under the 1200 floor.
+BY=$(curl -fsS "$BASE/estimates/projection?by=$(daysahead 30)" -H "$AUTH_EST")
+expect "the plan counts from the last weigh-in" "$(echo "$BY" | j " and (d['by']['from'], d['by']['days'])")" "('$(daysago 6)', 36)"
+expect "5.8 kg × 7700 over 36 days"            "$(echo "$BY" | j "['by']['daily_energy_change_kcal']")" "-1241.0"
+expect "is 1.13 kg a week, which is flagged"   "$(echo "$BY" | j " and (d['by']['required_rate_kg_per_week'], d['by']['caution'])")" "(-1.13, True)"
+expect "priced off the adaptive expenditure"   "$(echo "$BY" | j " and (d['by']['basis'], d['by']['basis_tdee_kcal'])")" "('adaptive', 2290.0)"
+expect "and held at the 1200 kcal floor"       "$(echo "$BY" | j " and (d['by']['suggested_intake_kcal'], d['by']['floored_at_minimum'])")" "(1200.0, True)"
+expect "a gentler deadline is not flagged" \
+  "$(curl -fsS "$BASE/estimates/projection?by=$(daysahead 200)" -H "$AUTH_EST" \
+    | j " and (d['by']['days'], d['by']['daily_energy_change_kcal'], d['by']['caution'], d['by']['suggested_intake_kcal'])")" "(206, -217.0, False, 2070.0)"
+expect "a date already passed has no days to work with" \
+  "$(curl -fsS "$BASE/estimates/projection?by=$(daysago 10)" -H "$AUTH_EST" | j " and (d['by'], d['by_reason'])")" "(None, 'date_not_after_as_of')"
+curl -fsS -X PATCH "$BASE/profile" -H "$AUTH_EST" -H 'content-type: application/json' -d '{"target_weight_kg":90}' >/dev/null
+expect "a target the trend is moving away from is never reached" \
+  "$(curl -fsS "$BASE/estimates/projection" -H "$AUTH_EST" | j " and (d['reached_on'], d['reached_reason'])")" "(None, 'trend_points_away')"
+
+# A flat scale projects nothing, and says that rather than "in eleven years".
+EMAIL_FLAT="smoke-flat-$(date +%s)-$RANDOM@example.test"
+AUTH_FLAT="Authorization: Bearer $(curl -fsS -X POST "$BASE/auth/register" -H 'content-type: application/json' \
+  -d "{\"email\":\"$EMAIL_FLAT\",\"password\":\"$PASSWORD\",\"display_name\":\"Flat\"}" | j "['access_token']")"
+curl -fsS -X PATCH "$BASE/profile" -H "$AUTH_FLAT" -H 'content-type: application/json' -d '{"target_weight_kg":75}' >/dev/null
+curl -fsS -X POST "$BASE/weights" -H "$AUTH_FLAT" -H 'content-type: application/json' -d "{\"recorded_on\":\"$(daysago 7)\",\"weight_kg\":80.0}" >/dev/null
+curl -fsS -X POST "$BASE/weights" -H "$AUTH_FLAT" -H 'content-type: application/json' -d "{\"recorded_on\":\"$TODAY\",\"weight_kg\":80.02}" >/dev/null
+expect "a flat trend is called flat" \
+  "$(curl -fsS "$BASE/estimates/projection" -H "$AUTH_FLAT" | j " and (d['ready'], d['reached_on'], d['reached_reason'])")" "(True, None, 'trend_is_flat')"
+expect "a deadline is still priced, as a change with no intake invented for it" \
+  "$(curl -fsS "$BASE/estimates/projection?by=$(daysahead 50)" -H "$AUTH_FLAT" | j " and (d['by']['daily_energy_change_kcal'], d['by']['basis'], d['by']['suggested_intake_kcal'])")" "(-773.0, None, None)"
+
 echo "== global foods and recipe visibility"
 # A second account, to check what crosses the boundary between users.
 OTHER_EMAIL="smoke-other-$(date +%s)-$RANDOM@example.test"
@@ -888,7 +1050,7 @@ status "recipe in use cannot be deleted" 400 -X DELETE "$BASE/recipes/$RID" -H "
 
 echo "== openapi"
 PATHS=$(curl -fsS "${BASE%/api/v1}/api/v1/openapi.json" | j " and len(d['paths'])")
-if [ "$PATHS" -ge 42 ]; then pass "spec documents $PATHS paths"; else fail "spec only documents $PATHS paths"; fi
+if [ "$PATHS" -ge 45 ]; then pass "spec documents $PATHS paths"; else fail "spec only documents $PATHS paths"; fi
 
 echo
 if [ "$failures" -eq 0 ]; then

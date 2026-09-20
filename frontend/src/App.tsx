@@ -29,6 +29,7 @@ import FocusSettings from '@/pages/settings/FocusSettings'
 import AccountSettings from '@/pages/settings/AccountSettings'
 import BodyBasicsForm from '@/components/BodyBasicsForm'
 import TargetsEditor from '@/components/TargetsEditor'
+import Calculators from '@/components/Calculators'
 import DisplayEditor from '@/components/DisplayEditor'
 import RemindersEditor from '@/components/RemindersEditor'
 import ApiKeysCard from '@/components/ApiKeysCard'
@@ -149,7 +150,15 @@ export default function App() {
             <Route index element={<Navigate to="focus" replace />} />
             <Route path="focus" element={<FocusSettings />} />
             <Route path="body" element={<BodyBasicsForm />} />
-            <Route path="targets" element={<TargetsEditor />} />
+            <Route
+              path="targets"
+              element={
+                <>
+                  <TargetsEditor />
+                  <Calculators />
+                </>
+              }
+            />
             <Route path="display" element={<DisplayEditor />} />
             <Route path="reminders" element={<RemindersEditor />} />
             <Route

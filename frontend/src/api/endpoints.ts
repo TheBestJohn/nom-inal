@@ -6,6 +6,7 @@ import type {
   AuthResponse,
   InstanceSettings,
   BarcodeLookup,
+  DayCompletion,
   DiaryDay,
   DiaryEntry,
   DiarySummary,
@@ -27,11 +28,13 @@ import type {
   ReminderKind,
   ReminderStatus,
   Profile,
+  Projection,
   Recipe,
   RecipeSummary,
   RegistrationStatus,
   SetFocusResponse,
   TargetSuggestion,
+  TdeeEstimate,
   TrackingFocus,
   WeightEntry,
   TargetKind,
@@ -226,4 +229,13 @@ export const api = {
     body: { quantity_g?: number; recipe_servings?: number; meal?: string; logged_on?: string },
   ) => request<DiaryEntry>(`/diary/${id}`, { method: 'PATCH', body }),
   deleteDiaryEntry: (id: string) => request<void>(`/diary/${id}`, { method: 'DELETE' }),
+  /** "I logged everything" for one day. An upsert; false unmarks. */
+  setDayComplete: (date: string, complete: boolean) =>
+    request<DayCompletion>(`/diary/day/${date}/complete`, { method: 'PUT', body: { complete } }),
+
+  /** Expenditure by energy balance over the last `days`, or what is still needed. */
+  tdeeEstimate: (days?: number) => request<TdeeEstimate>('/estimates/tdee', { query: { days } }),
+  /** Where the weight trend meets the target, and what reaching it by `by` would take. */
+  projection: (query: { days?: number; by?: string } = {}) =>
+    request<Projection>('/estimates/projection', { query }),
 }

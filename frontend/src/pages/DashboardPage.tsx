@@ -38,6 +38,7 @@ import { dashFor, nutrientValue, orderNutrients } from '@/lib/nutrients'
 import type { ChartMode, DiarySummary, Nutrient, NutritionTarget } from '@/api/types'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import ReminderBanner from '@/components/ReminderBanner'
+import ExpenditureLine from '@/components/ExpenditureLine'
 
 /** Recharts takes colours as values, not classes, so they come from the theme
  *  variables the rest of the UI uses rather than being hard-coded here. */
@@ -287,6 +288,9 @@ export default function DashboardPage() {
                 </div>
                 <EnergyShareRow share={day.data.energy_share} />
                 <TargetList targets={day.data.targets} />
+                {/* What your own complete days say you burn, or what is
+                    still needed before that can be said. Never hidden. */}
+                <ExpenditureLine />
               </>
             )}
           </CardContent>

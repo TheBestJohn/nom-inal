@@ -25,6 +25,32 @@ section and know what to update.
 - Settings is one route per section — focus, body, targets, display,
   reminders, integrations, account, admin — so each can be linked to.
 
+### Estimators that use your own data
+
+- A day can be marked "I logged everything", from the diary's day header. A
+  complete day with nothing in it is a fast day, a real zero; a day nobody has
+  vouched for is missing data. The summary lists complete days and counts
+  them, and the average keeps its meaning: over days with entries.
+- Adaptive expenditure: over the last 28 days (or any window from a week to a
+  year), the mean intake on complete days less what the weight trend stored,
+  at 7700 kcal per kilogram. A least-squares line through the weigh-ins is
+  the trend, so one weigh-in after a salty dinner does not decide the month.
+  It needs seven complete days and two weigh-ins a week apart before it says
+  a number; short of that it says exactly what is still needed. Confidence is
+  `low` under fourteen complete days or three weigh-ins, `moderate` under
+  twenty-eight, `good` from there. The profile formula is shown beside it.
+- Goal projection: the date the trend meets the target weight, or why it
+  never will (flat, or heading the other way); the weekly rate, with a
+  caution past about 1 % of body weight a week; and, for a chosen date, the
+  daily change from expenditure that would get there, priced off the adaptive
+  estimate when it is ready and the formula otherwise, never under 1200 kcal.
+- Calculators live where the number is used, under Settings → Targets:
+  protein per kilogram in the band the profile's goal puts you in, a macro
+  split from a chosen ratio into gram targets for the current calorie budget,
+  a keto ratio check, and BMI with its caveat. Each writes ordinary targets.
+  Today's intake card carries one line of context: the adaptive estimate with
+  a "Use as budget" action, or what is still needed to make one.
+
 ### API changes
 
 Additive:
@@ -36,6 +62,17 @@ Additive:
 - `net_carbs_g` on every `Nutrients` payload; accepted as a nutrient for
   targets and display preferences. Targets maximum rises from 8 to 9.
 - `energy_share` on the diary day and summary responses.
+- `PUT /diary/day/{date}/complete { complete }`, an upsert, returning
+  `{ date, complete, updated_at }`. A date more than a day past UTC today is a
+  400.
+- `complete` on `DiaryDay` and on each `DiarySummary.days[]` entry;
+  `complete_day_count` on `DiarySummary`. A day marked complete with no
+  entries now appears in `days` with `entry_count: 0`; `logged_day_count` and
+  `average` still cover days with entries only.
+- `GET /estimates/tdee?days=` and `GET /estimates/projection?days=&by=`.
+  Both carry `ready`, a `reason` when not ready, and `have`/`need` counts;
+  `estimate` (and `trend`, `reached_on`, `by`) are present exactly when
+  there is something to report, each absence with its own `*_reason`.
 
 ## v0.2.0 — 2026-09-20
 

@@ -408,12 +408,23 @@ export interface DiaryDay {
   energy_share: EnergyShare
   /** Progress against each target that is set, in display order. */
   targets: TargetProgress[]
+  /** "I logged everything": only complete days feed the adaptive estimate. */
+  complete: boolean
+}
+
+/** The flag as stored, from `PUT /diary/day/{date}/complete`. */
+export interface DayCompletion {
+  date: string
+  complete: boolean
+  updated_at: string
 }
 
 export interface DailyTotal {
   date: string
   total: Nutrients
+  /** Zero for a complete day with nothing logged — a fast day, listed because it is data. */
   entry_count: number
+  complete: boolean
 }
 
 export interface DiarySummary {
@@ -422,7 +433,115 @@ export interface DiarySummary {
   days: DailyTotal[]
   average: Nutrients
   energy_share: EnergyShare
+  /** Days with at least one entry; the average is over these. */
   logged_day_count: number
+  /** Days marked "I logged everything", with or without entries. */
+  complete_day_count: number
+}
+
+/** What a window held against what an estimate needs; the same shape for both. */
+export interface Evidence {
+  complete_days: number
+  weigh_ins: number
+  span_days: number
+}
+
+export type Confidence = 'low' | 'moderate' | 'good'
+
+/** Expenditure by energy balance, with everything it was made from. */
+export interface AdaptiveEstimate {
+  tdee_kcal: number
+  mean_intake_kcal: number
+  /** `mean_intake_kcal − tdee_kcal`: negative in a deficit. */
+  energy_balance_kcal_per_day: number
+  /** Negative when losing. */
+  weight_change_kg_per_week: number
+  slope_kg_per_day: number
+  trend_start_kg: number
+  trend_end_kg: number
+  first_weigh_in: string
+  last_weigh_in: string
+  confidence: Confidence
+  /** The profile goal `budget_kcal` is adjusted for, and by how much. */
+  goal: string
+  goal_adjustment_kcal: number
+  /** `tdee_kcal + goal_adjustment_kcal`, to the nearest ten, never under 1200. */
+  budget_kcal: number
+  floored_at_minimum: boolean
+}
+
+/**
+ * `GET /estimates/tdee`. `ready` is the field to branch on: `estimate` is
+ * present exactly when it is true, `reason` exactly when it is not.
+ */
+export interface TdeeEstimate {
+  ready: boolean
+  reason: string | null
+  from: string
+  to: string
+  days: number
+  have: Evidence
+  need: Evidence
+  estimate: AdaptiveEstimate | null
+  /** The profile formula, for comparison. */
+  formula: EnergyEstimate | null
+  formula_missing: string[]
+}
+
+export interface TrendEvidence {
+  weigh_ins: number
+  span_days: number
+}
+
+export interface TrendSummary {
+  /** The last weigh-in in the window; every projection counts from here. */
+  as_of: string
+  /** The fitted weight on `as_of`. */
+  current_kg: number
+  first_weigh_in: string
+  start_kg: number
+  rate_kg_per_week: number
+  slope_kg_per_day: number
+  /** Past about 1 % of body weight a week. */
+  caution: boolean
+  caution_threshold_kg_per_week: number
+}
+
+export interface ByDatePlan {
+  date: string
+  from: string
+  days: number
+  required_rate_kg_per_week: number
+  /** Change from expenditure, per day: negative is a deficit. */
+  daily_energy_change_kcal: number
+  /** `adaptive` or `formula`; null when neither estimate could be made. */
+  basis: 'adaptive' | 'formula' | null
+  basis_tdee_kcal: number | null
+  /** `basis_tdee_kcal + daily_energy_change_kcal`, to the nearest ten, never under 1200. */
+  suggested_intake_kcal: number | null
+  floored_at_minimum: boolean
+  caution: boolean
+}
+
+export type ReachedReason = 'not_ready' | 'no_target_weight' | 'trend_is_flat' | 'trend_points_away'
+export type ByReason = 'not_ready' | 'no_target_weight' | 'date_not_after_as_of'
+
+/** `GET /estimates/projection`. Each absent part carries its own reason. */
+export interface Projection {
+  ready: boolean
+  reason: string | null
+  from: string
+  to: string
+  days: number
+  have: TrendEvidence
+  need: TrendEvidence
+  target_weight_kg: number | null
+  trend: TrendSummary | null
+  reached_on: string | null
+  days_to_target: number | null
+  reached_reason: ReachedReason | null
+  by: ByDatePlan | null
+  by_reason: ByReason | null
 }
 
 /** The server's energy estimate, with its inputs echoed. */
