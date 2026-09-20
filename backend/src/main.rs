@@ -3,6 +3,7 @@ mod config;
 mod domain;
 mod error;
 mod extract;
+mod mcp;
 mod openapi;
 mod routes;
 mod services;
@@ -11,7 +12,7 @@ mod state;
 use std::time::Duration;
 
 use axum::extract::DefaultBodyLimit;
-use axum::http::{header, HeaderValue, Method};
+use axum::http::{header, HeaderName, HeaderValue, Method};
 use axum::routing::get;
 use axum::{Json, Router};
 use sqlx::postgres::PgPoolOptions;
@@ -94,7 +95,7 @@ async fn main() -> anyhow::Result<()> {
     state.photos.ensure_ready().await?;
     tracing::info!(dir = %state.config.photo_dir, "photo storage ready");
 
-    let app = Router::new()
+    let api = Router::new()
         .nest("/api/v1", routes::api_router())
         .route(
             "/api/v1/openapi.json",
@@ -103,10 +104,18 @@ async fn main() -> anyhow::Result<()> {
         // Axum caps request bodies at 2 MB by default, which a photo exceeds
         // immediately. The store enforces the real limit after decoding.
         .layer(DefaultBodyLimit::max(max_upload + 1024 * 1024))
+        .with_state(state.clone());
+
+    // The MCP server calls the API by dispatching requests to this same
+    // router in-process, so it is built from `api` before the transport
+    // layers go on: a tool call and an HTTP call reach the handlers by the
+    // same path, and the trace and compression layers see only the outside.
+    let app = api
+        .clone()
+        .merge(mcp::router(state, api))
         .layer(TraceLayer::new_for_http())
         .layer(CompressionLayer::new())
-        .layer(cors)
-        .with_state(state);
+        .layer(cors);
 
     let listener = tokio::net::TcpListener::bind(&bind_addr).await?;
     tracing::info!(%bind_addr, "listening");
@@ -131,7 +140,14 @@ fn build_cors(config: &Config) -> CorsLayer {
             Method::DELETE,
             Method::OPTIONS,
         ])
-        .allow_headers([header::AUTHORIZATION, header::CONTENT_TYPE])
+        .allow_headers([
+            header::AUTHORIZATION,
+            header::CONTENT_TYPE,
+            header::ACCEPT,
+            // Browser-based MCP clients and scripts send these.
+            HeaderName::from_static("x-api-key"),
+            HeaderName::from_static("mcp-protocol-version"),
+        ])
         .max_age(Duration::from_secs(3600));
 
     if config.cors_origins.is_empty() {
