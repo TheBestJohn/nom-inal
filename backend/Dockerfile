@@ -41,6 +41,16 @@ RUN mkdir src && echo 'fn main() {}' > src/main.rs \
 COPY src ./src
 COPY migrations ./migrations
 
+# Build provenance, reported by /api/v1/health. Declared here and not at the
+# top of the stage on purpose: an ARG invalidates every layer after it, and
+# the commit changes on every build, so above the dependency build it would
+# recompile every crate each time. Left empty they report as null, which is
+# the truthful answer for a build nobody stamped.
+ARG GIT_SHA
+ARG BUILT_AT
+ENV NOM_GIT_SHA=$GIT_SHA \
+    NOM_BUILT_AT=$BUILT_AT
+
 # Touch main.rs so cargo does not reuse the dummy binary's fingerprint. The
 # binary is copied to a fixed path so the runtime stage need not know the
 # target triple.

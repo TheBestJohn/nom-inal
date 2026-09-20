@@ -32,9 +32,20 @@ status() { # status <label> <wanted-code> <curl args...>
 }
 
 echo "== health"
-expect "database reachable" "$(curl -fsS "$BASE/health" | j "['database']")" "ok"
+HEALTH=$(curl -fsS "$BASE/health")
+expect "database reachable" "$(echo "$HEALTH" | j "['database']")" "ok"
+# Build provenance is stamped by the image build; a source build reports null
+# rather than a guess, so only the keys are asserted here.
+expect "the build says which commit it is, or admits it does not" \
+  "$(echo "$HEALTH" | j " and 'git_sha' in d and 'built_at' in d")" "True"
+expect "a stamp is either absent or a string" \
+  "$(echo "$HEALTH" | j " and all(v is None or isinstance(v, str) for v in (d['git_sha'], d['built_at']))")" "True"
 
 echo "== auth"
+# Public, so the sign-in page can say whether "create an account" would work
+# before anyone types a password.
+expect "registration status is readable without a token" \
+  "$(curl -fsS "$BASE/auth/registration" | j "['open']")" "True"
 TOKEN=$(curl -fsS -X POST "$BASE/auth/register" -H 'content-type: application/json' \
   -d "{\"email\":\"$EMAIL\",\"password\":\"$PASSWORD\",\"display_name\":\"Smoke\"}" | j "['access_token']")
 AUTH="Authorization: Bearer $TOKEN"
@@ -676,6 +687,9 @@ if [ "$(curl -s -o /dev/null -w '%{http_code}' "$BASE/admin/stats" -H "$AUTH")" 
   # editing a file and restarting a container.
   expect "the quorum is readable"      "$(curl -fsS "$BASE/admin/settings" -H "$AUTH" | j "['food_quorum'] >= 1")" "True"
   expect "and starts unconfigured"     "$(curl -fsS "$BASE/admin/settings" -H "$AUTH" | j "['updated_at'] is None")" "True"
+  expect "so does each seeded setting" \
+    "$(curl -fsS "$BASE/admin/settings" -H "$AUTH" | j "['food_quorum_updated_at'] is None and d['allow_registration_updated_at'] is None")" "True"
+  status "an empty change is refused"  400 -X PUT "$BASE/admin/settings" -H "$AUTH" -H 'content-type: application/json' -d '{}'
   status "a non-admin cannot read it"  403 "$BASE/admin/settings" -H "$AUTH3"
   status "nor change it"               403 -X PUT "$BASE/admin/settings" -H "$AUTH3" -H 'content-type: application/json' -d '{"food_quorum":1}'
   status "and zero is refused"         400 -X PUT "$BASE/admin/settings" -H "$AUTH" -H 'content-type: application/json' -d '{"food_quorum":0}'
@@ -707,6 +721,24 @@ if [ "$(curl -s -o /dev/null -w '%{http_code}' "$BASE/admin/stats" -H "$AUTH")" 
   JUNK=$(curl -fsS -X POST "$BASE/foods" -H "$AUTH2" -H 'content-type: application/json' -d '{"name":"Spam entry","calories_kcal":1,"protein_g":1,"carbs_g":1,"fat_g":1}' | j "['id']")
   curl -fsS -X PUT "$BASE/foods/$JUNK" -H "$AUTH3" -H 'content-type: application/json' -d '{"name":"Spam entry edited","calories_kcal":2,"protein_g":1,"carbs_g":1,"fat_g":1}' >/dev/null
   status "an administrator can remove a food outright" 204 -X DELETE "$BASE/foods/$JUNK" -H "$AUTH"
+
+  echo "== registration"
+  # "Close sign-ups once my household has joined" is the same kind of decision
+  # as the quorum, so it lives in the same row and is read on every request
+  # rather than at boot. Each seeded setting keeps its own marker: saving the
+  # quorum above must not have taken this one over from the environment.
+  expect "sign-ups start open"         "$(curl -fsS "$BASE/admin/settings" -H "$AUTH" | j "['allow_registration']")" "True"
+  expect "and still unconfigured"      "$(curl -fsS "$BASE/admin/settings" -H "$AUTH" | j "['allow_registration_updated_at'] is None")" "True"
+  CLOSED=$(curl -fsS -X PUT "$BASE/admin/settings" -H "$AUTH" -H 'content-type: application/json' -d '{"allow_registration":false}')
+  expect "an administrator can close them" "$(echo "$CLOSED" | j "['allow_registration']")" "False"
+  expect "which is recorded"           "$(echo "$CLOSED" | j "['allow_registration_updated_at'] is not None")" "True"
+  expect "without touching the quorum" "$(echo "$CLOSED" | j "['food_quorum']")" "2"
+  expect "the sign-in page is told"    "$(curl -fsS "$BASE/auth/registration" | j "['open']")" "False"
+  status "and a new account is refused" 403 -X POST "$BASE/auth/register" -H 'content-type: application/json' -d "{\"email\":\"late-$RANDOM@example.test\",\"password\":\"$PASSWORD\",\"display_name\":\"Late\"}"
+  status "while signing in still works" 200 -X POST "$BASE/auth/login" -H 'content-type: application/json' -d "{\"email\":\"$EMAIL3\",\"password\":\"$PASSWORD\"}"
+  curl -fsS -X PUT "$BASE/admin/settings" -H "$AUTH" -H 'content-type: application/json' -d '{"allow_registration":true}' >/dev/null
+  expect "reopening takes effect at once" "$(curl -fsS "$BASE/auth/registration" | j "['open']")" "True"
+  status "and accounts can be created again" 201 -X POST "$BASE/auth/register" -H 'content-type: application/json' -d "{\"email\":\"late-$RANDOM@example.test\",\"password\":\"$PASSWORD\",\"display_name\":\"Late\"}"
 else
   printf '  – skipped: this database already had accounts before the run\n'
 fi

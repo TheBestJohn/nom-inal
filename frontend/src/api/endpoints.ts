@@ -27,6 +27,7 @@ import type {
   Profile,
   Recipe,
   RecipeSummary,
+  RegistrationStatus,
   WeightEntry,
   TargetKind,
   Verdict,
@@ -109,6 +110,8 @@ export const api = {
 
   register: (body: { email: string; password: string; display_name: string }) =>
     request<AuthResponse>('/auth/register', { method: 'POST', body }),
+  /** Public: the sign-in page asks before offering "create an account". */
+  registrationStatus: () => request<RegistrationStatus>('/auth/registration'),
   login: (body: { email: string; password: string }) =>
     request<AuthResponse>('/auth/login', { method: 'POST', body }),
   me: () => request<Profile>('/auth/me'),
@@ -182,7 +185,8 @@ export const api = {
   adminPatchUser: (id: string, body: { is_admin?: boolean; disabled?: boolean }) =>
     request<AdminUserRow>(`/admin/users/${id}`, { method: 'PATCH', body }),
   adminSettings: () => request<InstanceSettings>('/admin/settings'),
-  updateAdminSettings: (body: { food_quorum: number }) =>
+  /** Omitted fields are left alone, so each card saves only its own setting. */
+  updateAdminSettings: (body: { food_quorum?: number; allow_registration?: boolean }) =>
     request<InstanceSettings>('/admin/settings', { method: 'PUT', body }),
 
   listRecipes: (query: { q?: string; scope?: 'mine' | 'public' | 'all' } = {}) =>

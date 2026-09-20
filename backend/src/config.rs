@@ -13,7 +13,12 @@ pub struct Config {
     pub usda_api_key: Option<String>,
     pub usda_base_url: String,
     pub off_base_url: String,
-    pub allow_registration: bool,
+    /// Seeds whether sign-ups are open, the same way `initial_food_quorum`
+    /// seeds the quorum: the live value is in `instance_settings`, an
+    /// administrator changes it from the admin area, and this only says where
+    /// a fresh install starts. `None` when the variable is unset, so a
+    /// deployment that never mentions it leaves the database default alone.
+    pub initial_allow_registration: Option<bool>,
     /// pg_trgm word-similarity threshold for the fuzzy search tier. Postgres
     /// defaults to 0.6, which is tuned for matching whole documents and is too
     /// strict for autocomplete: a one-letter typo in a short query lands around
@@ -57,9 +62,7 @@ impl Config {
                 .unwrap_or_else(|| "https://api.nal.usda.gov/fdc/v1".into()),
             off_base_url: opt("OFF_BASE_URL")
                 .unwrap_or_else(|| "https://world.openfoodfacts.org".into()),
-            allow_registration: opt("ALLOW_REGISTRATION")
-                .map(|v| v != "false" && v != "0")
-                .unwrap_or(true),
+            initial_allow_registration: opt("ALLOW_REGISTRATION").map(|v| v != "false" && v != "0"),
             photo_dir: opt("PHOTO_DIR").unwrap_or_else(|| "./data/photos".into()),
             max_upload_bytes: opt("MAX_UPLOAD_MB")
                 .and_then(|v| v.parse::<usize>().ok())

@@ -4,7 +4,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ShieldCheck } from 'lucide-react'
 
 import { api } from '@/api/endpoints'
-import type { AdminUserRow } from '@/api/types'
+import type { AdminUserRow, InstanceSettings } from '@/api/types'
 import { useAuth } from '@/lib/auth'
 import { relativeTime } from '@/lib/format'
 import { cn } from '@/lib/utils'
@@ -109,9 +109,86 @@ function SettingsCard() {
         </form>
 
         <p className="text-muted-foreground text-xs">
-          {settings.data?.updated_at
-            ? `Last changed by ${settings.data.updated_by_name ?? 'a former administrator'} ${relativeTime(settings.data.updated_at)}.`
-            : 'Still at its installation default, so FOOD_QUORUM in the environment can still set it at startup. Saving here takes it over for good.'}
+          {settings.data &&
+            seededNote(settings.data, settings.data.food_quorum_updated_at, 'FOOD_QUORUM')}
+        </p>
+      </CardContent>
+    </Card>
+  )
+}
+
+/**
+ * Whether the environment still steers a seeded setting, or who took it over.
+ *
+ * The attribution is the row's last editor, so it is only claimed for the
+ * setting saved by that edit: both stamps come from the same `now()` in one
+ * statement, which is what makes the equality safe.
+ */
+function seededNote(settings: InstanceSettings, savedAt: string | null, variable: string) {
+  if (!savedAt) {
+    return `Still at its installation default, so ${variable} in the environment can still set it at startup. Saving here takes it over for good.`
+  }
+  const by =
+    savedAt === settings.updated_at
+      ? (settings.updated_by_name ?? 'a former administrator')
+      : 'an administrator'
+  return `Saved by ${by} ${relativeTime(savedAt)}; ${variable} in the environment no longer applies.`
+}
+
+/**
+ * Whether new accounts may be created.
+ *
+ * The usual life of a self-hosted instance: sign up, invite the household,
+ * then close the door. That used to mean an edit to .env and a restart, which
+ * is exactly the wrong amount of ceremony for a toggle. The server reads it
+ * on every registration, so flipping it here takes effect at once, and an
+ * empty instance always admits its first account so this cannot lock a fresh
+ * install out of itself.
+ */
+function RegistrationCard() {
+  const queryClient = useQueryClient()
+  const settings = useQuery({ queryKey: ['admin', 'settings'], queryFn: () => api.adminSettings() })
+
+  const save = useMutation({
+    mutationFn: (open: boolean) => api.updateAdminSettings({ allow_registration: open }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['admin', 'settings'] })
+      queryClient.invalidateQueries({ queryKey: ['registration'] })
+    },
+  })
+
+  const open = settings.data?.allow_registration ?? true
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Sign-ups</CardTitle>
+        <CardDescription>
+          Whether anyone who reaches this instance can create an account. Existing accounts keep
+          signing in either way, and administrators can still restore a suspended one.
+        </CardDescription>
+        <CardAction>
+          <Label className="text-muted-foreground text-sm font-normal">
+            <Switch
+              checked={open}
+              disabled={settings.isLoading || save.isPending}
+              onCheckedChange={(v) => save.mutate(v)}
+              aria-label="Allow sign-ups"
+            />
+            {open ? 'Open' : 'Closed'}
+          </Label>
+        </CardAction>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <ErrorNote error={settings.error} />
+        <ErrorNote error={save.error} />
+        <p className="text-muted-foreground text-xs">
+          {settings.data &&
+            seededNote(
+              settings.data,
+              settings.data.allow_registration_updated_at,
+              'ALLOW_REGISTRATION',
+            )}
         </p>
       </CardContent>
     </Card>
@@ -218,6 +295,8 @@ export default function AdminPage() {
           )}
         </CardContent>
       </Card>
+
+      <RegistrationCard />
 
       <SettingsCard />
 

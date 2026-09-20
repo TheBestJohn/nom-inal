@@ -1,6 +1,8 @@
 use axum::extract::State;
 use axum::routing::{get, post};
 use axum::Router;
+use serde::Serialize;
+use utoipa::ToSchema;
 use validator::Validate;
 
 use crate::auth::{hash_password, issue_token, verify_password, CurrentUser};
@@ -12,11 +14,37 @@ use crate::state::AppState;
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/register", post(register))
+        .route("/registration", get(registration))
         .route("/login", post(login))
         .route("/me", get(me))
 }
 
 use crate::domain::user::USER_COLUMNS;
+
+/// Whether `POST /auth/register` would currently accept a new account.
+#[derive(Serialize, ToSchema)]
+pub struct RegistrationStatus {
+    /// True while sign-ups are open, or while the instance has no accounts at
+    /// all: the first account is always allowed, whatever the setting says,
+    /// because an instance nobody can sign in to cannot be reopened.
+    pub open: bool,
+}
+
+/// The one query behind both the public status and the register handler, so
+/// what the sign-in page says and what the server does cannot disagree.
+const REGISTRATION_OPEN: &str =
+    "SELECT allow_registration OR NOT EXISTS (SELECT 1 FROM users) FROM instance_settings";
+
+#[utoipa::path(
+    get, path = "/api/v1/auth/registration", tag = "auth",
+    responses((status = 200, description = "Whether sign-ups are open", body = RegistrationStatus))
+)]
+pub async fn registration(State(state): State<AppState>) -> ApiResult<Json<RegistrationStatus>> {
+    let open: bool = sqlx::query_scalar(REGISTRATION_OPEN)
+        .fetch_one(&state.db)
+        .await?;
+    Ok(Json(RegistrationStatus { open }))
+}
 
 #[utoipa::path(
     post, path = "/api/v1/auth/register", tag = "auth",
@@ -24,6 +52,7 @@ use crate::domain::user::USER_COLUMNS;
     responses(
         (status = 201, description = "Account created", body = AuthResponse),
         (status = 400, description = "Validation failed", body = crate::error::ErrorBody),
+        (status = 403, description = "Sign-ups are closed on this instance", body = crate::error::ErrorBody),
         (status = 409, description = "Email already registered", body = crate::error::ErrorBody),
     )
 )]
@@ -31,13 +60,9 @@ pub async fn register(
     State(state): State<AppState>,
     Json(body): Json<RegisterRequest>,
 ) -> ApiResult<(axum::http::StatusCode, Json<AuthResponse>)> {
-    if !state.config.allow_registration {
-        return Err(ApiError::Forbidden);
-    }
     body.validate()?;
 
     let email = body.email.trim().to_lowercase();
-    let hash = hash_password(&body.password)?;
 
     let mut tx = state.db.begin().await?;
 
@@ -53,6 +78,21 @@ pub async fn register(
     let first: bool = sqlx::query_scalar("SELECT NOT EXISTS (SELECT 1 FROM users)")
         .fetch_one(&mut *tx)
         .await?;
+
+    // Read from the database rather than the environment, so an administrator
+    // closing sign-ups takes effect on the next request rather than the next
+    // restart, and checked under the same lock so that two people racing for
+    // the one account an empty closed instance allows cannot both get it.
+    // Argon2 is the expensive part of this handler, so the refusal comes
+    // before it: a closed instance should not hash passwords for strangers.
+    let open: bool = sqlx::query_scalar(REGISTRATION_OPEN)
+        .fetch_one(&mut *tx)
+        .await?;
+    if !open {
+        return Err(ApiError::forbidden("sign-ups are closed on this instance"));
+    }
+
+    let hash = hash_password(&body.password)?;
 
     let user: UserRow = sqlx::query_as(&format!(
         "INSERT INTO users (email, password_hash, display_name, is_admin)

@@ -15,6 +15,7 @@ use utoipa::{Modify, OpenApi};
     paths(
         crate::routes::health,
         crate::routes::auth::register,
+        crate::routes::auth::registration,
         crate::routes::auth::login,
         crate::routes::auth::me,
         crate::routes::profile::get_profile,
@@ -83,6 +84,7 @@ use utoipa::{Modify, OpenApi};
         crate::domain::user::Profile,
         crate::domain::user::ChartMode,
         crate::domain::user::RegisterRequest,
+        crate::routes::auth::RegistrationStatus,
         crate::domain::user::LoginRequest,
         crate::domain::user::AuthResponse,
         crate::domain::user::UpdateProfileRequest,
