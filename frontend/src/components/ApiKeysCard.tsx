@@ -9,7 +9,14 @@ import { cn } from '@/lib/utils'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import {
+  Card,
+  CardAction,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
@@ -169,9 +176,7 @@ export default function ApiKeysCard() {
             >
               <span className="min-w-0 flex-1">
                 <span className="block truncate font-medium">{key.name}</span>
-                <span className="text-muted-foreground block font-mono text-xs">
-                  {key.prefix}…
-                </span>
+                <span className="text-muted-foreground block font-mono text-xs">{key.prefix}…</span>
               </span>
               {key.scopes.includes('write') ? (
                 <Badge variant="secondary" className="text-[10px]">

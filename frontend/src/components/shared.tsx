@@ -142,7 +142,9 @@ export function TargetBar({ target }: { target: TargetProgress }) {
       <Progress
         value={Math.min(100, percent)}
         aria-label={`${label} ${kind}`}
-        indicatorClassName={cn(over ? 'bg-destructive' : met ? 'bg-success' : TONE[target.nutrient] ?? 'bg-primary')}
+        indicatorClassName={cn(
+          over ? 'bg-destructive' : met ? 'bg-success' : (TONE[target.nutrient] ?? 'bg-primary'),
+        )}
       />
       <span
         className={cn(

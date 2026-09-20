@@ -155,8 +155,7 @@ export default function FoodDetailDialog({
               </DialogTitle>
               <DialogDescription>
                 {food.brand ? `${food.brand} · ` : ''}
-                Revision {provenance.revision} ·{' '}
-                {provenance.last_edited_by_name ?? 'someone'}{' '}
+                Revision {provenance.revision} · {provenance.last_edited_by_name ?? 'someone'}{' '}
                 {CHANGE_KIND[provenance.last_change_kind] ?? provenance.last_change_kind}{' '}
                 {relativeTime(provenance.last_edited_at)}
                 {provenance.contributors > 1 ? ` · ${provenance.contributors} contributors` : ''}
@@ -229,7 +228,8 @@ export default function FoodDetailDialog({
                   {food.parent ? (
                     <p className="text-sm">
                       A <strong>{food.variant_label}</strong> variant of{' '}
-                      <strong>{food.parent.name}</strong> ({kcal(food.parent.calories_kcal)} / 100 g).
+                      <strong>{food.parent.name}</strong> ({kcal(food.parent.calories_kcal)} / 100
+                      g).
                     </p>
                   ) : (
                     <div className="space-y-2">
@@ -424,7 +424,11 @@ export default function FoodDetailDialog({
                           r{v.revision}
                           {v.current ? '' : ' · superseded'}
                         </span>
-                        {v.note && <span className="text-muted-foreground w-full text-xs italic">“{v.note}”</span>}
+                        {v.note && (
+                          <span className="text-muted-foreground w-full text-xs italic">
+                            “{v.note}”
+                          </span>
+                        )}
                       </li>
                     ))}
                   </ul>

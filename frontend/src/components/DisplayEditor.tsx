@@ -7,7 +7,14 @@ import { useAuth } from '@/lib/auth'
 import { NUTRIENTS } from '@/lib/nutrients'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Switch } from '@/components/ui/switch'
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from '@/components/ui/table'
 import { ErrorNote } from '@/components/shared'
 
 /**
@@ -79,7 +86,9 @@ export default function DisplayEditor() {
                     aria-label={`Show ${meta.label} in readouts`}
                     checked={shown.includes(meta.key)}
                     disabled={save.isPending}
-                    onCheckedChange={() => save.mutate({ shown_nutrients: toggle(shown, meta.key) })}
+                    onCheckedChange={() =>
+                      save.mutate({ shown_nutrients: toggle(shown, meta.key) })
+                    }
                   />
                 </TableCell>
                 <TableCell className="text-right">

@@ -14,7 +14,17 @@ import {
 
 import { api } from '@/api/endpoints'
 import { useAuth } from '@/lib/auth'
-import { addDays, kg, kgToLb, lbToKg, prettyDate, round, shortDate, signed, today } from '@/lib/format'
+import {
+  addDays,
+  kg,
+  kgToLb,
+  lbToKg,
+  prettyDate,
+  round,
+  shortDate,
+  signed,
+  today,
+} from '@/lib/format'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { Card, CardAction, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -132,7 +142,13 @@ export default function WeightPage() {
             }}
           >
             <Field label="Date" htmlFor="w-date">
-              <Input id="w-date" type="date" value={date} max={today()} onChange={(e) => setDate(e.target.value)} />
+              <Input
+                id="w-date"
+                type="date"
+                value={date}
+                max={today()}
+                onChange={(e) => setDate(e.target.value)}
+              />
             </Field>
             <Field label={`Weight (${unit})`} htmlFor="w-value">
               <Input
@@ -158,7 +174,12 @@ export default function WeightPage() {
               />
             </Field>
             <Field label="Note (optional)" htmlFor="w-note">
-              <Input id="w-note" value={note} maxLength={500} onChange={(e) => setNote(e.target.value)} />
+              <Input
+                id="w-note"
+                value={note}
+                maxLength={500}
+                onChange={(e) => setNote(e.target.value)}
+              />
             </Field>
 
             <div className="flex flex-wrap items-center gap-3 sm:col-span-2 lg:col-span-4">
@@ -202,7 +223,12 @@ export default function WeightPage() {
               <ResponsiveContainer width="100%" height={260}>
                 <LineChart data={series} margin={{ top: 8, right: 8, bottom: 0, left: -12 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
-                  <XAxis dataKey="date" stroke="var(--muted-foreground)" fontSize={12} tickMargin={8} />
+                  <XAxis
+                    dataKey="date"
+                    stroke="var(--muted-foreground)"
+                    fontSize={12}
+                    tickMargin={8}
+                  />
                   <YAxis
                     stroke="var(--muted-foreground)"
                     fontSize={12}
@@ -269,7 +295,9 @@ export default function WeightPage() {
                     <p className="tabular font-medium">{display(entry.weight_kg)}</p>
                     <p className="text-muted-foreground truncate text-xs">
                       {prettyDate(entry.recorded_on)}
-                      {entry.body_fat_pct != null ? ` · ${round(entry.body_fat_pct)}% body fat` : ''}
+                      {entry.body_fat_pct != null
+                        ? ` · ${round(entry.body_fat_pct)}% body fat`
+                        : ''}
                       {entry.note ? ` · ${entry.note}` : ''}
                     </p>
                   </div>

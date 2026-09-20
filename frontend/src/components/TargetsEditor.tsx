@@ -10,7 +10,14 @@ import { cn } from '@/lib/utils'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import {
+  Card,
+  CardAction,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
@@ -22,7 +29,6 @@ import { ErrorNote, Spinner } from '@/components/shared'
  * things you try to stay under. Every one can be flipped — carbs are a budget
  * when cutting and a goal when bulking.
  */
-
 
 /** A row in the editor. A blank amount means "no target for this nutrient". */
 interface Row {

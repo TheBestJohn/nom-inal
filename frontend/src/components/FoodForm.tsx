@@ -336,9 +336,7 @@ export default function FoodForm({
       {perServing && !!form.serving_size_g && !!form.calories_kcal && (
         <p className="text-muted-foreground text-xs">
           Works out to{' '}
-          <strong>
-            {tidy((form.calories_kcal * 100) / form.serving_size_g).toFixed(0)} kcal
-          </strong>{' '}
+          <strong>{tidy((form.calories_kcal * 100) / form.serving_size_g).toFixed(0)} kcal</strong>{' '}
           per 100 g, which is what gets stored.
         </p>
       )}

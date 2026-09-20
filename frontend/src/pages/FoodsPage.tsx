@@ -9,7 +9,14 @@ import { grams, kcal, round, sourceLabel } from '@/lib/format'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import {
+  Card,
+  CardAction,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from '@/components/ui/card'
 import {
   Dialog,
   DialogContent,
@@ -21,8 +28,22 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
-import { Empty, ErrorNote, SourceBadge, Spinner, VerificationBadge, foodStatus } from '@/components/shared'
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from '@/components/ui/table'
+import {
+  Empty,
+  ErrorNote,
+  SourceBadge,
+  Spinner,
+  VerificationBadge,
+  foodStatus,
+} from '@/components/shared'
 import FoodForm from '@/components/FoodForm'
 import FoodDetailDialog from '@/components/FoodDetailDialog'
 
@@ -76,8 +97,7 @@ export default function FoodsPage() {
   })
 
   // Rows are stored per 100 g, so showing a serving is one multiplication.
-  const basisFactor = (food: Food) =>
-    tableBasis === 'per_serving' ? food.serving_size_g / 100 : 1
+  const basisFactor = (food: Food) => (tableBasis === 'per_serving' ? food.serving_size_g / 100 : 1)
 
   return (
     <div className="space-y-4">

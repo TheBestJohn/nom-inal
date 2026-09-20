@@ -10,23 +10,23 @@
  */
 
 /** "1.", "1)", "Step 1:", "- ", "• " — the markers people write themselves. */
-const LEADING_MARKER = /^(?:(?:step\s*)?\d{1,3}\s*[.):\-–]|[-*•])\s*/i;
+const LEADING_MARKER = /^(?:(?:step\s*)?\d{1,3}\s*[.):\-–]|[-*•])\s*/i
 
 /** A number-dot-space in the middle of a paragraph: "…then 2. Add the…". */
-const INLINE_MARKER = /\s+(?=\d{1,3}[.)]\s)/;
+const INLINE_MARKER = /\s+(?=\d{1,3}[.)]\s)/
 
 export function instructionSteps(text: string): string[] {
   let lines = text
     .split(/\r?\n/)
     .map((l) => l.trim())
-    .filter(Boolean);
+    .filter(Boolean)
 
   // One long line reading "1. … 2. … 3. …" is a list that lost its line
   // breaks, not a paragraph. It has to open with a number to count: a real
   // paragraph that happens to contain "2. " partway through is left alone.
   if (lines.length === 1 && /^\d{1,3}[.)]\s/.test(lines[0])) {
-    lines = lines[0].split(INLINE_MARKER);
+    lines = lines[0].split(INLINE_MARKER)
   }
 
-  return lines.map((l) => l.replace(LEADING_MARKER, "").trim()).filter(Boolean);
+  return lines.map((l) => l.replace(LEADING_MARKER, '').trim()).filter(Boolean)
 }

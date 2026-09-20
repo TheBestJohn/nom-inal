@@ -44,7 +44,12 @@ export default function DiaryPage() {
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h1 className="text-2xl font-semibold tracking-tight">Diary</h1>
         <div className="flex items-center gap-1">
-          <Button variant="outline" size="icon" onClick={() => setDate(addDays(date, -1))} aria-label="Previous day">
+          <Button
+            variant="outline"
+            size="icon"
+            onClick={() => setDate(addDays(date, -1))}
+            aria-label="Previous day"
+          >
             <ChevronLeft />
           </Button>
           <Input
@@ -53,7 +58,12 @@ export default function DiaryPage() {
             value={date}
             onChange={(e) => setDate(e.target.value || today())}
           />
-          <Button variant="outline" size="icon" onClick={() => setDate(addDays(date, 1))} aria-label="Next day">
+          <Button
+            variant="outline"
+            size="icon"
+            onClick={() => setDate(addDays(date, 1))}
+            aria-label="Next day"
+          >
             <ChevronRight />
           </Button>
           {date !== today() && (
@@ -181,7 +191,12 @@ function AddEntry({ meal, date, onDone }: { meal: string; date: string; onDone: 
   const log = useMutation({
     mutationFn: () =>
       picked
-        ? api.logDiaryEntry({ logged_on: date, meal, food_id: picked.id, quantity_g: Number(amount) })
+        ? api.logDiaryEntry({
+            logged_on: date,
+            meal,
+            food_id: picked.id,
+            quantity_g: Number(amount),
+          })
         : api.logDiaryEntry({
             logged_on: date,
             meal,
@@ -225,7 +240,14 @@ function AddEntry({ meal, date, onDone }: { meal: string; date: string; onDone: 
         <DialogDescription>{prettyDate(date)}</DialogDescription>
       </DialogHeader>
 
-      <Tabs value={mode} onValueChange={(v) => { setMode(v as typeof mode); setPicked(null); setPickedRecipe(null) }}>
+      <Tabs
+        value={mode}
+        onValueChange={(v) => {
+          setMode(v as typeof mode)
+          setPicked(null)
+          setPickedRecipe(null)
+        }}
+      >
         <TabsList className="grid w-full grid-cols-2">
           <TabsTrigger value="food">Food</TabsTrigger>
           <TabsTrigger value="recipe">Recipe</TabsTrigger>
@@ -260,7 +282,11 @@ function AddEntry({ meal, date, onDone }: { meal: string; date: string; onDone: 
               </div>
 
               <div className="flex flex-wrap gap-2">
-                <Button variant="outline" size="sm" onClick={() => setAmount(String(picked.serving_size_g))}>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setAmount(String(picked.serving_size_g))}
+                >
                   1 serving ({grams(picked.serving_size_g, 0)}
                   {picked.serving_label ? ` · ${picked.serving_label}` : ''})
                 </Button>

@@ -435,7 +435,12 @@ export default function DashboardPage() {
             <ResponsiveContainer width="100%" height={220}>
               <LineChart data={weightSeries} margin={{ top: 8, right: 8, bottom: 0, left: -12 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
-                <XAxis dataKey="date" stroke="var(--muted-foreground)" fontSize={12} tickMargin={8} />
+                <XAxis
+                  dataKey="date"
+                  stroke="var(--muted-foreground)"
+                  fontSize={12}
+                  tickMargin={8}
+                />
                 <YAxis
                   stroke="var(--muted-foreground)"
                   fontSize={12}

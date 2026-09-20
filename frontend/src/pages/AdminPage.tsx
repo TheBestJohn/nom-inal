@@ -10,11 +10,25 @@ import { relativeTime } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import {
+  Card,
+  CardAction,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from '@/components/ui/table'
 import { Empty, ErrorNote, Spinner } from '@/components/shared'
 
 /**
@@ -138,8 +152,7 @@ export default function AdminPage() {
   const stats = useQuery({ queryKey: ['admin', 'stats'], queryFn: () => api.adminStats() })
   const users = useQuery({
     queryKey: ['admin', 'users', debounced, includeDisabled],
-    queryFn: () =>
-      api.adminUsers({ q: debounced || undefined, include_disabled: includeDisabled }),
+    queryFn: () => api.adminUsers({ q: debounced || undefined, include_disabled: includeDisabled }),
   })
 
   const patch = useMutation({
@@ -180,7 +193,11 @@ export default function AdminPage() {
               <Stat label="Accounts" value={stats.data.users} hint={`${stats.data.admins} admin`} />
               <Stat label="Suspended" value={stats.data.disabled_users} />
               <Stat label="Active API keys" value={stats.data.active_api_keys} />
-              <Stat label="Foods" value={stats.data.foods} hint={`${stats.data.food_variants} variants`} />
+              <Stat
+                label="Foods"
+                value={stats.data.foods}
+                hint={`${stats.data.food_variants} variants`}
+              />
               <Stat
                 label="Verified foods"
                 value={stats.data.foods_verified}
@@ -314,9 +331,7 @@ export default function AdminPage() {
               </TableBody>
             </Table>
           )}
-          <p className="text-muted-foreground text-xs">
-            Foods column reads created / edited.
-          </p>
+          <p className="text-muted-foreground text-xs">Foods column reads created / edited.</p>
         </CardContent>
       </Card>
     </div>

@@ -120,11 +120,9 @@ export const api = {
   listTargets: () => request<NutritionTarget[]>('/targets'),
   replaceTargets: (targets: TargetInput[]) =>
     request<NutritionTarget[]>('/targets', { method: 'PUT', body: { targets } }),
-  deleteTarget: (nutrient: Nutrient) =>
-    request<void>(`/targets/${nutrient}`, { method: 'DELETE' }),
+  deleteTarget: (nutrient: Nutrient) => request<void>(`/targets/${nutrient}`, { method: 'DELETE' }),
 
-  listPhotos: (weightEntryId: string) =>
-    request<Photo[]>(`/weights/${weightEntryId}/photos`),
+  listPhotos: (weightEntryId: string) => request<Photo[]>(`/weights/${weightEntryId}/photos`),
   uploadPhoto: (weightEntryId: string, file: File, caption?: string) =>
     uploadPhotoTo(`/weights/${weightEntryId}/photos`, file, caption),
   listRecipePhotos: (recipeId: string) => request<Photo[]>(`/recipes/${recipeId}/photos`),

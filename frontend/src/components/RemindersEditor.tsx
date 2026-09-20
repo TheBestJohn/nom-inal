@@ -5,7 +5,14 @@ import { api } from '@/api/endpoints'
 import type { Reminder, ReminderKind } from '@/api/types'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import {
+  Card,
+  CardAction,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
@@ -66,7 +73,10 @@ export default function RemindersEditor() {
           {rows.map((r) => (
             <div key={r.kind} className="flex flex-wrap items-center gap-x-4 gap-y-2 py-3">
               <div className="min-w-0 flex-1">
-                <Label htmlFor={`rem-${r.kind}`} className={r.enabled ? '' : 'text-muted-foreground'}>
+                <Label
+                  htmlFor={`rem-${r.kind}`}
+                  className={r.enabled ? '' : 'text-muted-foreground'}
+                >
                   {r.label}
                 </Label>
                 <p className="text-muted-foreground text-xs">{HINT[r.kind]}</p>

@@ -7,7 +7,14 @@ import { api } from '@/api/endpoints'
 import { grams, kcal } from '@/lib/format'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import {
+  Card,
+  CardAction,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from '@/components/ui/card'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Empty, ErrorNote, MacroRow, Spinner } from '@/components/shared'
 import { useAuthedImage } from '@/components/PhotoStrip'
@@ -126,7 +133,9 @@ function Cover({ url, name }: { url: string; name: string }) {
   const { objectUrl } = useAuthedImage(url)
   return (
     <div className="bg-muted size-20 shrink-0 overflow-hidden rounded-md border">
-      {objectUrl && <img src={objectUrl} alt={`Photo of ${name}`} className="size-full object-cover" />}
+      {objectUrl && (
+        <img src={objectUrl} alt={`Photo of ${name}`} className="size-full object-cover" />
+      )}
     </div>
   )
 }

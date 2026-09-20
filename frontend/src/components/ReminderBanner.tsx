@@ -22,7 +22,10 @@ const ACTION: Record<ReminderKind, { to: string; label: string }> = {
  * twice for the same thing.
  */
 export default function ReminderBanner() {
-  const status = useQuery({ queryKey: ['reminders', 'status'], queryFn: () => api.reminderStatus() })
+  const status = useQuery({
+    queryKey: ['reminders', 'status'],
+    queryFn: () => api.reminderStatus(),
+  })
   const due = (status.data ?? []).filter((r) => r.due)
 
   if (due.length === 0) return null
