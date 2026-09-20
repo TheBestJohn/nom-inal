@@ -20,11 +20,21 @@ import { Label } from '@/components/ui/label'
 import { Separator } from '@/components/ui/separator'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import FoodPicker from '@/components/FoodPicker'
-import { Empty, ErrorNote, MacroRow, Spinner, TargetList } from '@/components/shared'
+import {
+  Empty,
+  EnergyShareRow,
+  ErrorNote,
+  MacroRow,
+  Spinner,
+  TargetList,
+} from '@/components/shared'
+import { useAuth } from '@/lib/auth'
+import { withNetCarbs } from '@/lib/nutrients'
 
 const MEALS = ['breakfast', 'lunch', 'dinner', 'snack']
 
 export default function DiaryPage() {
+  const { user } = useAuth()
   const [date, setDate] = useState(today())
   const [adding, setAdding] = useState<string | null>(null)
   const queryClient = useQueryClient()
@@ -100,6 +110,7 @@ export default function DiaryPage() {
                 </span>
               )}
             </div>
+            <EnergyShareRow share={day.data.energy_share} />
             <TargetList targets={day.data.targets} />
           </CardContent>
         </Card>
@@ -151,8 +162,10 @@ export default function DiaryPage() {
             )}
 
             {/* A subtotal only earns its space once a meal has more than one
-                entry — otherwise it repeats the row above it. */}
-            {group.total && group.entries.length > 1 && (
+                entry — otherwise it repeats the row above it. The exception
+                is carb awareness, where the per-meal figure is the point,
+                so it is always there to be found in the same place. */}
+            {group.total && (group.entries.length > 1 || user?.tracking_focus === 'diabetes') && (
               <>
                 <Separator className="my-2" />
                 <div className="flex items-center justify-between gap-3">
@@ -213,24 +226,27 @@ function AddEntry({ meal, date, onDone }: { meal: string; date: string; onDone: 
   // see before committing is what gets stored.
   const preview =
     picked && Number(amount) > 0
-      ? {
+      ? withNetCarbs({
           calories_kcal: (picked.calories_kcal * Number(amount)) / 100,
           protein_g: (picked.protein_g * Number(amount)) / 100,
           carbs_g: (picked.carbs_g * Number(amount)) / 100,
           fat_g: (picked.fat_g * Number(amount)) / 100,
-          fiber_g: 0,
-          sugar_g: 0,
-          saturated_fat_g: 0,
-          sodium_mg: 0,
-        }
+          fiber_g: ((picked.fiber_g ?? 0) * Number(amount)) / 100,
+          sugar_g: ((picked.sugar_g ?? 0) * Number(amount)) / 100,
+          saturated_fat_g: ((picked.saturated_fat_g ?? 0) * Number(amount)) / 100,
+          sodium_mg: ((picked.sodium_mg ?? 0) * Number(amount)) / 100,
+        })
       : pickedRecipe && Number(servings) > 0
-        ? {
-            ...pickedRecipe.per_serving,
+        ? withNetCarbs({
             calories_kcal: pickedRecipe.per_serving.calories_kcal * Number(servings),
             protein_g: pickedRecipe.per_serving.protein_g * Number(servings),
             carbs_g: pickedRecipe.per_serving.carbs_g * Number(servings),
             fat_g: pickedRecipe.per_serving.fat_g * Number(servings),
-          }
+            fiber_g: pickedRecipe.per_serving.fiber_g * Number(servings),
+            sugar_g: pickedRecipe.per_serving.sugar_g * Number(servings),
+            saturated_fat_g: pickedRecipe.per_serving.saturated_fat_g * Number(servings),
+            sodium_mg: pickedRecipe.per_serving.sodium_mg * Number(servings),
+          })
         : null
 
   return (

@@ -173,9 +173,9 @@ export default function AdminPage() {
 
   return (
     <div className="space-y-4">
-      <h1 className="flex items-center gap-2 text-2xl font-semibold tracking-tight">
+      <h2 className="flex items-center gap-2 text-xl font-semibold tracking-tight">
         <ShieldCheck className="size-5" /> Administration
-      </h1>
+      </h2>
 
       <Card>
         <CardHeader>

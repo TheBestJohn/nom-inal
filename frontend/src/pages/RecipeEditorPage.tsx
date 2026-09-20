@@ -6,6 +6,7 @@ import { ArrowLeft, ExternalLink, Globe, Pencil, Plus, X } from 'lucide-react'
 import { api } from '@/api/endpoints'
 import type { RecipeInput } from '@/api/endpoints'
 import type { Food, Nutrients, Recipe, RecipeSummary } from '@/api/types'
+import { withNetCarbs } from '@/lib/nutrients'
 import { grams, kcal, round } from '@/lib/format'
 import { instructionSteps } from '@/lib/recipeText'
 import { Alert, AlertDescription } from '@/components/ui/alert'
@@ -64,6 +65,7 @@ const ZERO: Nutrients = {
   sugar_g: 0,
   saturated_fat_g: 0,
   sodium_mg: 0,
+  net_carbs_g: 0,
 }
 
 /**
@@ -416,24 +418,29 @@ export default function RecipeEditorPage() {
 
   // Totals recompute as you type, using the same grams/100 scaling the server
   // applies on save — so what is shown is what gets stored.
-  const total: Nutrients = items.reduce<Nutrients>(
-    (acc, item) => ({
-      ...acc,
-      calories_kcal: acc.calories_kcal + item.perUnit.calories_kcal * item.amount,
-      protein_g: acc.protein_g + item.perUnit.protein_g * item.amount,
-      carbs_g: acc.carbs_g + item.perUnit.carbs_g * item.amount,
-      fat_g: acc.fat_g + item.perUnit.fat_g * item.amount,
-    }),
-    ZERO,
+  // The live total follows the four macros only; the server is the reference
+  // once saved. Net carbs is still derived from it rather than left at zero,
+  // so the row never shows carbs beside a net-carbs figure that ignores them.
+  const total: Nutrients = withNetCarbs(
+    items.reduce<Nutrients>(
+      (acc, item) => ({
+        ...acc,
+        calories_kcal: acc.calories_kcal + item.perUnit.calories_kcal * item.amount,
+        protein_g: acc.protein_g + item.perUnit.protein_g * item.amount,
+        carbs_g: acc.carbs_g + item.perUnit.carbs_g * item.amount,
+        fat_g: acc.fat_g + item.perUnit.fat_g * item.amount,
+      }),
+      ZERO,
+    ),
   )
 
-  const perServing: Nutrients = {
+  const perServing: Nutrients = withNetCarbs({
     ...total,
     calories_kcal: total.calories_kcal / servingCount,
     protein_g: total.protein_g / servingCount,
     carbs_g: total.carbs_g / servingCount,
     fat_g: total.fat_g / servingCount,
-  }
+  })
 
   const totalWeight = items.reduce((sum, i) => sum + i.gramsPerUnit * i.amount, 0)
 

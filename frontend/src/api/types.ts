@@ -7,7 +7,30 @@ export interface Nutrients {
   sugar_g: number
   saturated_fat_g: number
   sodium_mg: number
+  /** Carbs minus fibre, floored at zero. Derived by the server, never stored. */
+  net_carbs_g: number
 }
+
+/** Share of energy from each macro, in percent. Always sums to 100, or all 0. */
+export interface EnergyShare {
+  protein_pct: number
+  carbs_pct: number
+  fat_pct: number
+}
+
+/**
+ * Why the account is tracking. Null until the welcome flow has asked; `custom`
+ * is the answer "none of these" and is never asked again.
+ */
+export type TrackingFocus =
+  | 'general'
+  | 'weight_loss'
+  | 'muscle_gain'
+  | 'keto'
+  | 'diabetes'
+  | 'blood_pressure'
+  | 'heart_health'
+  | 'custom'
 
 export interface Profile {
   id: string
@@ -30,6 +53,7 @@ export interface Profile {
    * one axis; `actual` keeps the real figures and gives each its own chart.
    */
   chart_mode: ChartMode
+  tracking_focus: TrackingFocus | null
   created_at: string
 }
 
@@ -38,6 +62,7 @@ export type Nutrient =
   | 'calories_kcal'
   | 'protein_g'
   | 'carbs_g'
+  | 'net_carbs_g'
   | 'fat_g'
   | 'fiber_g'
   | 'sugar_g'
@@ -369,6 +394,7 @@ export interface DiaryDay {
   date: string
   meals: MealGroup[]
   total: Nutrients
+  energy_share: EnergyShare
   /** Progress against each target that is set, in display order. */
   targets: TargetProgress[]
 }
@@ -384,7 +410,69 @@ export interface DiarySummary {
   to: string
   days: DailyTotal[]
   average: Nutrients
+  energy_share: EnergyShare
   logged_day_count: number
+}
+
+/** The server's energy estimate, with its inputs echoed. */
+export interface EnergyEstimate {
+  sex_assumed_male: boolean
+  age_years: number
+  height_cm: number
+  weight_kg: number
+  weight_source: 'weigh_in' | 'target_weight' | string
+  activity_level: string
+  activity_factor: number
+  goal: string
+  goal_adjustment_kcal: number
+  bmr_kcal: number
+  tdee_kcal: number
+  calories_kcal: number
+  floored_at_minimum: boolean
+}
+
+/** One target as a preset would write it. `amount` is null when `needs` is not empty. */
+export interface PreviewTarget {
+  nutrient: Nutrient
+  label: string
+  unit: string
+  kind: TargetKind
+  amount: number | null
+  rationale: string
+  /** Profile fields this rule needs and does not have. */
+  needs: string[]
+}
+
+export interface FocusPreview {
+  focus: TrackingFocus
+  label: string
+  summary: string
+  targets: PreviewTarget[]
+  shown_nutrients: Nutrient[]
+  chart_nutrients: Nutrient[]
+  chart_mode: ChartMode
+  /** The profile goal this focus sets, when it implies one. */
+  goal: string | null
+  missing: string[]
+  estimate: EnergyEstimate | null
+  changes_display: boolean
+}
+
+export interface FocusOption {
+  focus: TrackingFocus
+  label: string
+  summary: string
+}
+
+export interface SetFocusResponse {
+  profile: Profile
+  applied: FocusPreview | null
+}
+
+export interface TargetSuggestion {
+  estimate: EnergyEstimate | null
+  missing: string[]
+  targets: PreviewTarget[]
 }
 
 export interface Health {

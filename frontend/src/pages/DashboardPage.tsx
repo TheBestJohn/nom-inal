@@ -26,7 +26,14 @@ import {
   CardTitle,
 } from '@/components/ui/card'
 import { Separator } from '@/components/ui/separator'
-import { Empty, ErrorNote, MacroRow, Spinner, TargetList } from '@/components/shared'
+import {
+  Empty,
+  EnergyShareRow,
+  ErrorNote,
+  MacroRow,
+  Spinner,
+  TargetList,
+} from '@/components/shared'
 import { dashFor, nutrientValue, orderNutrients } from '@/lib/nutrients'
 import type { ChartMode, DiarySummary, Nutrient, NutritionTarget } from '@/api/types'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
@@ -278,6 +285,7 @@ export default function DashboardPage() {
                     </span>
                   )}
                 </div>
+                <EnergyShareRow share={day.data.energy_share} />
                 <TargetList targets={day.data.targets} />
               </>
             )}
@@ -341,7 +349,7 @@ export default function DashboardPage() {
               ? 'Each nutrient as a share of its own goal or budget, so they share one axis.'
               : 'Real figures, one chart each — they have no shared scale.'}{' '}
             Change which nutrients in{' '}
-            <Link to="/settings" className="text-primary underline underline-offset-4">
+            <Link to="/settings/display" className="text-primary underline underline-offset-4">
               Settings
             </Link>
             .
@@ -372,7 +380,7 @@ export default function DashboardPage() {
           ) : mode === 'percent' && withTargets.length === 0 ? (
             <Empty>
               Nothing here has a goal or budget yet —{' '}
-              <Link to="/settings" className="text-primary underline underline-offset-4">
+              <Link to="/settings/targets" className="text-primary underline underline-offset-4">
                 set one
               </Link>{' '}
               to see progress against it, or switch to actual values.
@@ -415,7 +423,12 @@ export default function DashboardPage() {
                   Average over {summary.data?.logged_day_count} logged day
                   {summary.data?.logged_day_count === 1 ? '' : 's'}
                 </span>
-                {summary.data && <MacroRow n={summary.data.average} compact />}
+                {summary.data && (
+                  <div className="flex flex-col items-end gap-1">
+                    <MacroRow n={summary.data.average} compact />
+                    <EnergyShareRow share={summary.data.energy_share} />
+                  </div>
+                )}
               </div>
             </>
           )}

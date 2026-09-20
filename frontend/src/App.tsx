@@ -1,4 +1,4 @@
-import { NavLink, Navigate, Route, Routes } from 'react-router-dom'
+import { NavLink, Navigate, Route, Routes, useLocation } from 'react-router-dom'
 import {
   BookOpen,
   CircleDot,
@@ -22,8 +22,16 @@ import FoodsPage from '@/pages/FoodsPage'
 import RecipesPage from '@/pages/RecipesPage'
 import RecipeEditorPage from '@/pages/RecipeEditorPage'
 import WeightPage from '@/pages/WeightPage'
-import SettingsPage from '@/pages/SettingsPage'
+import WelcomePage from '@/pages/WelcomePage'
 import AdminPage from '@/pages/AdminPage'
+import SettingsLayout from '@/pages/settings/SettingsLayout'
+import FocusSettings from '@/pages/settings/FocusSettings'
+import AccountSettings from '@/pages/settings/AccountSettings'
+import BodyBasicsForm from '@/components/BodyBasicsForm'
+import TargetsEditor from '@/components/TargetsEditor'
+import DisplayEditor from '@/components/DisplayEditor'
+import RemindersEditor from '@/components/RemindersEditor'
+import ApiKeysCard from '@/components/ApiKeysCard'
 
 interface NavItem {
   to: string
@@ -46,7 +54,18 @@ const NAV: NavItem[] = [
  * Shown only to administrators. Hiding it is presentation, not security — the
  * page and every endpoint behind it check the flag against the database.
  */
-const ADMIN_NAV: NavItem = { to: '/admin', label: 'Admin', icon: ShieldCheck }
+const ADMIN_NAV: NavItem = { to: '/settings/admin', label: 'Admin', icon: ShieldCheck }
+
+/**
+ * Sends an unasked account to the welcome flow from wherever it landed.
+ * A component rather than a redirect on every route, so the route table
+ * stays a list of pages.
+ */
+function WelcomeGate() {
+  const location = useLocation()
+  if (location.pathname === '/welcome') return null
+  return <Navigate to="/welcome" replace />
+}
 
 export default function App() {
   const { user, loading, signOut } = useAuth()
@@ -60,6 +79,10 @@ export default function App() {
   }
 
   if (!user) return <SignInPage />
+
+  // An account that has never been asked why it is tracking is asked once,
+  // wherever it was heading. Skipping records "custom", so this never loops.
+  const welcome = user.tracking_focus === null
 
   return (
     <div className="flex min-h-dvh flex-col">
@@ -108,6 +131,7 @@ export default function App() {
       </header>
 
       <main className="mx-auto w-full max-w-5xl flex-1 px-4 py-6 pb-16">
+        {welcome && <WelcomeGate />}
         <Routes>
           <Route path="/" element={<DashboardPage />} />
           <Route path="/diary" element={<DiaryPage />} />
@@ -116,8 +140,22 @@ export default function App() {
           <Route path="/recipes/new" element={<RecipeEditorPage />} />
           <Route path="/recipes/:id" element={<RecipeEditorPage />} />
           <Route path="/weight" element={<WeightPage />} />
-          <Route path="/settings" element={<SettingsPage />} />
-          <Route path="/admin" element={<AdminPage />} />
+          <Route
+            path="/welcome"
+            element={welcome ? <WelcomePage /> : <Navigate to="/" replace />}
+          />
+          <Route path="/settings" element={<SettingsLayout />}>
+            <Route index element={<Navigate to="focus" replace />} />
+            <Route path="focus" element={<FocusSettings />} />
+            <Route path="body" element={<BodyBasicsForm />} />
+            <Route path="targets" element={<TargetsEditor />} />
+            <Route path="display" element={<DisplayEditor />} />
+            <Route path="reminders" element={<RemindersEditor />} />
+            <Route path="integrations" element={<ApiKeysCard />} />
+            <Route path="account" element={<AccountSettings />} />
+            <Route path="admin" element={<AdminPage />} />
+          </Route>
+          <Route path="/admin" element={<Navigate to="/settings/admin" replace />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </main>

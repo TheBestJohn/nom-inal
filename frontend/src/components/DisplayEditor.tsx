@@ -51,8 +51,9 @@ export default function DisplayEditor() {
       <CardHeader>
         <CardTitle>What to show</CardTitle>
         <CardDescription>
-          Every food already stores all eight of these; this is only about which ones reach the
-          screen. Kept on your account, so it follows you between devices.
+          Every food already carries the figures behind all of these — net carbs is worked out from
+          carbs and fiber — so this is only about which ones reach the screen. Kept on your account,
+          so it follows you between devices.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-3">

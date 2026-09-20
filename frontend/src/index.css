@@ -46,6 +46,12 @@
   --sugar: oklch(0.58 0.2 27);
   --satfat: oklch(0.6 0.12 195);
   --sodium: oklch(0.5 0.17 340);
+  /* Net carbs sits between carbs and fat in display order, so it has to be
+     told apart from both. Nine hues is past the point where every pair can be
+     far apart; a crimson is the one that keeps adjacent pairs clear under
+     both simulated colour-blindnesses in both modes, validated like the
+     rest. Sugar and sodium are its nearest neighbours, and never adjacent. */
+  --netcarbs: oklch(0.5 0.15 10);
   --success: oklch(0.55 0.13 155);
 
   --chart-1: oklch(0.52 0.09 158);
@@ -89,6 +95,7 @@
   --sugar: oklch(0.6 0.19 27);
   --satfat: oklch(0.66 0.12 195);
   --sodium: oklch(0.53 0.17 340);
+  --netcarbs: oklch(0.6 0.15 0);
   --success: oklch(0.72 0.14 155);
 
   --chart-1: oklch(0.7 0.12 158);
@@ -128,6 +135,7 @@
   --color-sugar: var(--sugar);
   --color-satfat: var(--satfat);
   --color-sodium: var(--sodium);
+  --color-netcarbs: var(--netcarbs);
   --color-success: var(--success);
 
   --color-chart-1: var(--chart-1);

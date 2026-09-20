@@ -2,7 +2,14 @@ import { Link } from 'react-router-dom'
 import { Loader2, TriangleAlert } from 'lucide-react'
 import type { ReactNode } from 'react'
 
-import type { Food, Nutrient, Nutrients, TargetProgress, VerificationStatus } from '@/api/types'
+import type {
+  EnergyShare,
+  Food,
+  Nutrient,
+  Nutrients,
+  TargetProgress,
+  VerificationStatus,
+} from '@/api/types'
 import { useAuth } from '@/lib/auth'
 import { kcal, round } from '@/lib/format'
 import { nutrientValue, orderNutrients } from '@/lib/nutrients'
@@ -99,6 +106,7 @@ const TONE: Record<string, string> = {
   calories_kcal: 'bg-kcal',
   protein_g: 'bg-protein',
   carbs_g: 'bg-carbs',
+  net_carbs_g: 'bg-netcarbs',
   fat_g: 'bg-fat',
 }
 
@@ -158,13 +166,38 @@ export function TargetBar({ target }: { target: TargetProgress }) {
   )
 }
 
+/**
+ * Where the day's energy came from, as three shares that always total 100.
+ *
+ * Read from the server rather than derived here so it agrees with the
+ * figures beside it: the shares divide by the Atwater sum of the three
+ * macros, not by the logged calories, which a label rounds and sometimes
+ * pads with fibre or alcohol.
+ */
+export function EnergyShareRow({ share, className }: { share: EnergyShare; className?: string }) {
+  if (share.protein_pct + share.carbs_pct + share.fat_pct === 0) return null
+  return (
+    <p className={cn('tabular text-muted-foreground text-xs', className)}>
+      <span className="text-protein">P {Math.round(share.protein_pct)}%</span>
+      {' · '}
+      <span className="text-carbs">C {Math.round(share.carbs_pct)}%</span>
+      {' · '}
+      <span className="text-fat">F {Math.round(share.fat_pct)}%</span>
+      <span className="ml-1 opacity-70">of energy</span>
+    </p>
+  )
+}
+
 export function TargetList({ targets }: { targets: TargetProgress[] }) {
   if (targets.length === 0) {
     return (
       <Alert>
         <AlertDescription>
           No goals or budgets set yet —{' '}
-          <Link to="/settings" className="text-primary font-medium underline underline-offset-4">
+          <Link
+            to="/settings/targets"
+            className="text-primary font-medium underline underline-offset-4"
+          >
             add them in Settings
           </Link>{' '}
           to track progress.
