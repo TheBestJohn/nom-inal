@@ -25,10 +25,48 @@ section and know what to update.
 - Settings is one route per section — focus, body, targets, display,
   reminders, integrations, account, admin — so each can be linked to.
 
+### Logging speed
+
+- The food picker opens on what you logged recently — foods and recipes alike,
+  most recent day first and most often first within it — each with the amount
+  you used last time, so logging the usual is two taps.
+- Copy yesterday onto an empty day, or copy one meal from any date, with the
+  same things in the same amounts. Save a logged meal as a recipe in one step;
+  a recipe you logged stays a recipe inside it.
+- Scan a barcode with the camera, using the browser's own detector where it has
+  one and a bundled decoder everywhere else, with a torch toggle when the camera
+  offers one. A photo of the barcode works too, and is what you get when camera
+  access is refused. The result goes through the same Open Food Facts lookup as
+  a typed code.
+- Household portions — "1 cup", "1 slice", "1 mug" — kept per food, imported
+  from USDA's portion data and addable in the food form, and offered beside
+  grams when logging. The diary still stores grams.
+- A units preference, metric or imperial, for body weight and height: shown in
+  pounds and feet-and-inches, typed in the same, stored in kilograms and
+  centimetres. Food stays in grams.
+- The app installs on a phone: a web manifest with icons, and a hand-written
+  service worker that keeps the built shell and today's diary for an offline
+  open. Nothing is cached that was written, and no photo is. A network failure
+  at start-up no longer signs you out.
+
 ### API changes
 
 Additive:
 
+- `Food.portions` (`[{ id, label, grams, source }]`) on every food a response
+  carries — lists, search results, details, variants and parents.
+  `POST /foods/{id}/portions { label, grams }` and
+  `DELETE /foods/{id}/portions/{portion_id}`, both returning the food.
+  `ExternalFood.portions` is accepted on `POST /foods/import` and returned by
+  `GET /foods/external/usda/{id}`; an import that sends none fetches USDA's own.
+- `GET /foods/recent?limit=`: what the caller logged, one row per food or
+  recipe, with the last amount and a count.
+- `POST /diary/copy { from_date, to_date, meal? }`, returning
+  `{ from_date, to_date, meal, copied, entries }`.
+- `POST /recipes/from-meal { date, meal, name, servings?, is_public? }`,
+  returning the new `Recipe`.
+- `Profile.units` (`metric` | `imperial`, never null), settable through
+  `PATCH /profile`. The figures on the profile stay in kg and cm.
 - `Profile.tracking_focus` (nullable enum), settable through `PATCH /profile`.
 - `GET /profile/focus`, `GET /profile/focus/preview?focus=`,
   `POST /profile/focus { focus, apply }`.
