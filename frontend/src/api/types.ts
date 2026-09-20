@@ -482,6 +482,24 @@ export interface RecipeDraft {
   author: string | null
 }
 
+export interface MergeCount {
+  created: number
+  updated: number
+  skipped: number
+}
+
+/** What an account import did, and everything it could not do as asked. */
+export interface ImportReport {
+  profile_updated: boolean
+  targets: MergeCount
+  reminders: MergeCount
+  foods: MergeCount
+  recipes: MergeCount
+  diary: MergeCount
+  weights: MergeCount
+  notes: string[]
+}
+
 export interface DiaryEntry {
   id: string
   logged_on: string

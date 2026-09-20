@@ -21,6 +21,7 @@ import type {
   FoodRevision,
   FoodVerification,
   Health,
+  ImportReport,
   Nutrient,
   NutrientBasis,
   NutritionTarget,
@@ -245,6 +246,15 @@ export const api = {
   importRecipeFromUrl: (url: string) =>
     request<RecipeDraft>('/recipes/import', { method: 'POST', body: { url } }),
 
+  /** Everything the account owns, as one JSON file or a zip of CSVs. */
+  downloadAccountExport: (format: 'json' | 'csv') =>
+    downloadFile(
+      `/api/v1/account/export?format=${format}`,
+      format === 'json' ? 'nom-inal-account.json' : 'nom-inal-account.zip',
+    ),
+  /** Merges an export back in by natural identity; the report says what happened. */
+  importAccount: (file: unknown) =>
+    request<ImportReport>('/account/import', { method: 'POST', body: file }),
   /** Turn one meal of one day into a recipe, entries as logged. */
   recipeFromMeal: (body: { date: string; meal: string; name: string; servings?: number }) =>
     request<Recipe>('/recipes/from-meal', { method: 'POST', body }),

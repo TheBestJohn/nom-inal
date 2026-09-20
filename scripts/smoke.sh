@@ -1134,6 +1134,92 @@ expect "and something that is not a URL"    "$(imp "not a url at all")" "400"
 status "a missing url is a 400"             400 -X POST "$BASE/recipes/import" -H "$AUTH" -H 'content-type: application/json' -d '{}'
 status "and the import needs a token"       401 -X POST "$BASE/recipes/import" -H 'content-type: application/json' -d '{"url":"https://example.com/"}'
 
+echo "== account export and import"
+# One document, everything the account owns and nothing secret. Read back
+# into a second account it recreates the lot by natural identity; read a
+# second time it changes nothing, and says so.
+ACCT=$(curl -fsS "$BASE/account/export" -H "$AUTH")
+expect "the export is versioned"            "$(echo "$ACCT" | j "['format']")" "1"
+expect "and is this account's"              "$(echo "$ACCT" | j "['profile']['email']")" "$EMAIL"
+expect "with nothing secret in it" \
+  "$(echo "$ACCT" | python3 -c 'import sys; t=sys.stdin.read().lower(); print(any(k in t for k in ("password","hash","token","nomi_")))')" "False"
+expect "the foods it uses"                  "$(echo "$ACCT" | j " and any(f['name'] == 'Rolled oats' and f['variant_label'] is None for f in d['foods'])")" "True"
+expect "in the seed shape"                  "$(echo "$ACCT" | j " and all('id' not in f and 'created_by' not in f for f in d['foods'])")" "True"
+expect "every recipe, sub-recipes inlined"  "$(echo "$ACCT" | j " and [r['items'][1]['recipe']['name'] for r in d['recipes'] if r['name'] == 'Smoke dish'][0]")" "Smoke sauce"
+expect "the diary by what was eaten"        "$(echo "$ACCT" | j " and any(e['recipe_name'] == 'Smoke dish' and e['logged_on'] == '2026-02-02' for e in d['diary'])")" "True"
+expect "weigh-ins by date"                  "$(echo "$ACCT" | j " and len(d['weights'])")" "$(curl -fsS "$BASE/weights" -H "$AUTH" | j ".__len__()")"
+expect "targets and reminders"              "$(echo "$ACCT" | j " and len(d['targets']) > 0 and len(d['reminders']) > 0")" "True"
+expect "photo metadata, with a way to fetch the bytes" \
+  "$(echo "$ACCT" | j " and len(d['photos']) > 0 and all(p['url'].startswith('/api/v1/photos/') and p['byte_size'] > 0 for p in d['photos'])")" "True"
+expect "a weigh-in photo named by its date" \
+  "$(echo "$ACCT" | j " and any(p['subject'] == 'weigh_in' and p['recorded_on'] == '2026-05-07' for p in d['photos'])")" "True"
+
+# The CSV form is the two tables people put in a spreadsheet, zipped together.
+CSVZIP=$(mktemp /tmp/smoke-export-XXXXXX.zip)
+curl -fsS "$BASE/account/export?format=csv" -H "$AUTH" -o "$CSVZIP"
+expect "csv comes as a zip" \
+  "$(curl -fsS -o /dev/null -w '%{content_type}' "$BASE/account/export?format=csv" -H "$AUTH")" "application/zip"
+expect "holding the diary and the weights" \
+  "$(python3 -c 'import sys,zipfile; z=zipfile.ZipFile(sys.argv[1]); print(sorted(z.namelist()))' "$CSVZIP")" "['diary.csv', 'weights.csv']"
+expect "with the diary's nutrients computed" \
+  "$(python3 -c 'import sys,zipfile; z=zipfile.ZipFile(sys.argv[1]); print(z.read("diary.csv").decode().splitlines()[0])' "$CSVZIP")" \
+  "date,meal,kind,name,brand,quantity_g,recipe_servings,calories_kcal,protein_g,carbs_g,net_carbs_g,fat_g,fiber_g,sugar_g,saturated_fat_g,sodium_mg,logged_at"
+expect "and the day the recipe was logged agrees with the diary" \
+  "$(python3 -c 'import sys,zipfile,csv,io; z=zipfile.ZipFile(sys.argv[1]); rows=list(csv.DictReader(io.StringIO(z.read("diary.csv").decode()))); print(sum(float(r["calories_kcal"]) for r in rows if r["date"]=="2026-02-02"))' "$CSVZIP")" "501.0"
+rm -f "$CSVZIP"
+status "an unknown format is refused"       400 "$BASE/account/export?format=xml" -H "$AUTH"
+
+# Into a fresh account.
+RESTORE_EMAIL="smoke-restore-$(date +%s)-$RANDOM@example.test"
+RAUTH="Authorization: Bearer $(curl -fsS -X POST "$BASE/auth/register" -H 'content-type: application/json' \
+  -d "{\"email\":\"$RESTORE_EMAIL\",\"password\":\"$PASSWORD\",\"display_name\":\"Restore\"}" | j "['access_token']")"
+REPORT=$(curl -fsS -X POST "$BASE/account/import" -H "$RAUTH" -H 'content-type: application/json' -d "$ACCT")
+expect "the profile is filled in"           "$(echo "$REPORT" | j "['profile_updated']")" "True"
+expect "but the email is not touched"       "$(curl -fsS "$BASE/auth/me" -H "$RAUTH" | j "['email']")" "$RESTORE_EMAIL"
+expect "and the name is"                    "$(curl -fsS "$BASE/auth/me" -H "$RAUTH" | j "['display_name']")" "Smoke"
+expect "every recipe is created"            "$(echo "$REPORT" | j "['recipes']['created']")" "$(echo "$ACCT" | j " and len(d['recipes'])")"
+expect "foods already here are left alone"  "$(echo "$REPORT" | j "['foods']['created']")" "0"
+expect "and counted as skipped"             "$(echo "$REPORT" | j "['foods']['skipped']")" "$(echo "$ACCT" | j " and len(d['foods'])")"
+expect "every diary entry is created"       "$(echo "$REPORT" | j "['diary']['created']")" "$(echo "$ACCT" | j " and len(d['diary'])")"
+expect "every weigh-in is created"          "$(echo "$REPORT" | j "['weights']['created']")" "$(echo "$ACCT" | j " and len(d['weights'])")"
+expect "targets and reminders too"          "$(echo "$REPORT" | j "['targets']['created'] > 0 and d['reminders']['created'] > 0")" "True"
+expect "photos are named as not restored"   "$(echo "$REPORT" | j " and any('photo' in n for n in d['notes'])")" "True"
+expect "and nothing else was left unsaid"   "$(echo "$REPORT" | j " and len(d['notes'])")" "1"
+expect "the restored recipe adds up the same" \
+  "$(curl -fsS "$BASE/recipes?q=Smoke%20dish" -H "$RAUTH" | j "[0]['per_serving']['calories_kcal']")" "501.0"
+expect "linked to its own copy of the sauce" \
+  "$(curl -fsS "$BASE/recipes?q=Smoke%20dish" -H "$RAUTH" | j "[0]['item_count']")" "2"
+expect "and so does the restored diary" \
+  "$(curl -fsS "$BASE/diary/day?date=2026-02-02" -H "$RAUTH" | j "['total']['calories_kcal']")" "501.0"
+expect "free text survived the trip" \
+  "$(curl -fsS "$BASE/recipes?q=Loose%20ends" -H "$RAUTH" | j "[0]['untracked_count']")" "2"
+
+# The same file again changes nothing.
+AGAIN=$(curl -fsS -X POST "$BASE/account/import" -H "$RAUTH" -H 'content-type: application/json' -d "$ACCT")
+expect "a second import creates nothing"    "$(echo "$AGAIN" | j " and sum(d[k]['created'] + d[k]['updated'] for k in ('targets','reminders','foods','recipes','diary','weights'))")" "0"
+expect "and the profile is already right"   "$(echo "$AGAIN" | j "['profile_updated']")" "False"
+expect "recipes are still one each"         "$(curl -fsS "$BASE/recipes" -H "$RAUTH" | j ".__len__()")" "$(echo "$ACCT" | j " and len(d['recipes'])")"
+
+# A trimmed, hand-written file: a changed weigh-in updates in place, a
+# recipe naming a food this instance lacks keeps the line as text and says
+# so, and an unknown format is refused before anything is touched.
+PARTIAL=$(curl -fsS -X POST "$BASE/account/import" -H "$RAUTH" -H 'content-type: application/json' -d '{
+  "weights":[{"recorded_on":"2026-01-01","weight_kg":83.0}],
+  "recipes":[{"name":"Restored ghost","servings":2,
+              "items":[{"food":{"key":"unobtainium|","name":"Unobtainium","brand":null},"quantity_g":100},
+                       {"label":"salt"}]}]}')
+expect "a changed weigh-in is updated"      "$(echo "$PARTIAL" | j "['weights']['updated']")" "1"
+expect "the recipe is still created"        "$(echo "$PARTIAL" | j "['recipes']['created']")" "1"
+expect "with the missing food kept as text" "$(curl -fsS "$BASE/recipes?q=Restored%20ghost" -H "$RAUTH" | j "[0]['untracked_count']")" "2"
+expect "and the gap named"                  "$(echo "$PARTIAL" | j " and any('Unobtainium' in n for n in d['notes'])")" "True"
+PARTIAL2=$(curl -fsS -X POST "$BASE/account/import" -H "$RAUTH" -H 'content-type: application/json' -d '{
+  "recipes":[{"name":"Restored ghost","servings":2,
+              "items":[{"food":{"key":"unobtainium|","name":"Unobtainium","brand":null},"quantity_g":100},
+                       {"label":"salt"}]}]}')
+expect "and the same gap twice is not a change" "$(echo "$PARTIAL2" | j "['recipes']['skipped']")" "1"
+status "a future format is refused"         400 -X POST "$BASE/account/import" -H "$RAUTH" -H 'content-type: application/json' -d '{"format":2}'
+status "and the import needs a token"       401 -X POST "$BASE/account/import" -H 'content-type: application/json' -d '{}'
+
 echo "== api keys"
 KEY=$(curl -fsS -X POST "$BASE/keys" -H "$AUTH2" -H 'content-type: application/json' -d '{"name":"smoke dashboard"}')
 KEYTOKEN=$(echo "$KEY" | j "['token']")
@@ -1294,7 +1380,7 @@ status "recipe in use cannot be deleted" 400 -X DELETE "$BASE/recipes/$RID" -H "
 
 echo "== openapi"
 PATHS=$(curl -fsS "${BASE%/api/v1}/api/v1/openapi.json" | j " and len(d['paths'])")
-if [ "$PATHS" -ge 54 ]; then pass "spec documents $PATHS paths"; else fail "spec only documents $PATHS paths"; fi
+if [ "$PATHS" -ge 56 ]; then pass "spec documents $PATHS paths"; else fail "spec only documents $PATHS paths"; fi
 
 echo
 if [ "$failures" -eq 0 ]; then

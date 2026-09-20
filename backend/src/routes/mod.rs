@@ -1,3 +1,4 @@
+pub mod account;
 pub mod admin;
 pub mod auth;
 pub mod diary;
@@ -71,6 +72,7 @@ pub fn api_router() -> Router<AppState> {
     Router::new()
         .route("/health", get(health))
         .nest("/auth", auth::router())
+        .nest("/account", account::router())
         // Readable without a token: a shared recipe and its photos. Shared
         // means public, and this is the public half of it.
         .nest("/public", public::router())
