@@ -5,7 +5,7 @@ use utoipa::ToSchema;
 use uuid::Uuid;
 use validator::Validate;
 
-use super::nutrients::Nutrients;
+use super::nutrients::{EnergyShare, Nutrients};
 use super::target::TargetProgress;
 
 #[derive(Debug, FromRow)]
@@ -145,8 +145,12 @@ pub struct MealGroup {
 #[derive(Debug, Serialize, ToSchema)]
 pub struct DiaryDay {
     pub date: NaiveDate,
+    /// Grouped by meal, each with its own total, so a client watching one
+    /// nutrient per meal reads it rather than re-adding entries.
     pub meals: Vec<MealGroup>,
     pub total: Nutrients,
+    /// Share of the day's energy from protein, carbohydrate and fat.
+    pub energy_share: EnergyShare,
     /// Where the day stands against each target the user has set, in display
     /// order. Empty when no targets are set.
     pub targets: Vec<TargetProgress>,
@@ -166,5 +170,7 @@ pub struct DiarySummary {
     pub days: Vec<DailyTotal>,
     /// Average across days that actually have entries.
     pub average: Nutrients,
+    /// Share of the average day's energy from protein, carbohydrate and fat.
+    pub energy_share: EnergyShare,
     pub logged_day_count: i64,
 }

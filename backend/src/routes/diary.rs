@@ -180,6 +180,7 @@ pub async fn day(
     Ok(Json(DiaryDay {
         date,
         meals,
+        energy_share: total.energy_share(),
         total,
         targets,
     }))
@@ -293,6 +294,7 @@ pub async fn summary(
         from,
         to,
         days,
+        energy_share: average.energy_share(),
         average,
         logged_day_count,
     }))
