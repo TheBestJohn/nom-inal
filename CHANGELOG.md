@@ -8,6 +8,10 @@ section and know what to update.
 
 ## Unreleased
 
+_Nothing yet._
+
+## v0.3.0 — 2026-09-20
+
 ### Why are you tracking?
 
 - A tracking focus on the profile — general health, weight loss, muscle gain,

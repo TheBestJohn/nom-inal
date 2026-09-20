@@ -8,7 +8,7 @@ use utoipa::{Modify, OpenApi};
 #[openapi(
     info(
         title = "nom-inal API",
-        version = "0.2.0",
+        version = "0.3.0",
         description = "Weight, macro, calorie, recipe and food-database tracking."
     ),
     servers((url = "/api/v1", description = "Versioned API root")),
