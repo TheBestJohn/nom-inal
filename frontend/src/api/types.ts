@@ -398,6 +398,12 @@ export interface RecipeItem {
 
 export interface RecipeSummary {
   id: string
+  /**
+   * The word this recipe's shared link is spelled with, from its name.
+   * Unique across the instance; a rename issues a new one and the old one
+   * keeps resolving, so a link already sent never rots.
+   */
+  slug: string
   name: string
   description: string | null
   servings: number
@@ -420,6 +426,8 @@ export interface RecipeSummary {
 
 export interface Recipe {
   id: string
+  /** See `RecipeSummary.slug`. */
+  slug: string
   name: string
   description: string | null
   instructions: string | null

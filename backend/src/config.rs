@@ -26,6 +26,15 @@ pub struct Config {
     pub trgm_word_threshold: f64,
     /// Where photo files are written. A mounted volume in Docker.
     pub photo_dir: String,
+    /// The address this instance is reached at from outside, e.g.
+    /// `https://nom.example`. Only the shared-recipe page needs it, and only
+    /// because Open Graph tags and canonical links have to be absolute: a
+    /// server behind a proxy cannot learn its public name from its own
+    /// socket. Unset means "take it from the request" — `X-Forwarded-Proto`
+    /// and `Host`, which the bundled nginx sets — which is right for every
+    /// ordinary deployment. Set it when the proxy in front does not forward
+    /// them, or forwards a name that is not the public one.
+    pub public_origin: Option<String>,
     /// Largest accepted upload, before downscaling.
     pub max_upload_bytes: usize,
     /// Seeds the verification quorum on an instance no administrator has
@@ -64,6 +73,7 @@ impl Config {
                 .unwrap_or_else(|| "https://world.openfoodfacts.org".into()),
             initial_allow_registration: opt("ALLOW_REGISTRATION").map(|v| v != "false" && v != "0"),
             photo_dir: opt("PHOTO_DIR").unwrap_or_else(|| "./data/photos".into()),
+            public_origin: opt("PUBLIC_ORIGIN").map(|v| v.trim_end_matches('/').to_string()),
             max_upload_bytes: opt("MAX_UPLOAD_MB")
                 .and_then(|v| v.parse::<usize>().ok())
                 .filter(|mb| *mb > 0 && *mb <= 200)

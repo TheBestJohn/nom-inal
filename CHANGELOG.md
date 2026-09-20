@@ -8,7 +8,45 @@ section and know what to update.
 
 ## Unreleased
 
-_Nothing yet._
+### Shared links that look like the recipe
+
+- A shared recipe's link is now a page the server renders: `GET /r/{slug}`
+  returns a complete HTML document with the recipe's name in its title, Open
+  Graph and Twitter tags, a canonical link and schema.org `Recipe` JSON-LD.
+  Slack, iMessage, Discord, Facebook, Twitter and Google read a page's head
+  and never run its scripts, so every shared recipe used to preview as the
+  same generic card; now each previews as itself. The page carries the recipe
+  as a document — photos, ingredients, numbered method, nutrition per serving
+  and whole — with its CSS inline, no JavaScript at all, a dark mode and a
+  print stylesheet. nginx proxies `/r/` to the API instead of serving the app
+  shell. The in-app public recipe page is gone, replaced by it.
+- Recipes have a **slug**, made from the name: `/r/pierogi-ruskie` rather than
+  `/r/3f7c…`. Renaming a recipe issues a new slug and keeps the old one
+  pointing at it, so a link already sent still resolves and redirects once to
+  the current address; a slug is never reused by another recipe. Links built
+  from a recipe's uuid keep working and redirect the same way.
+- **A preview image for every shared recipe**, at
+  `GET /api/v1/public/recipes/{slug}/preview.png`: the first photo, re-encoded
+  to 1200×630 and cropped to cover, or — for a recipe with no photos — a card
+  drawn from its name, servings and calories. Cached hard and revalidated with
+  an `ETag`, so a link posted in a busy channel does not redraw it per reader.
+- `PUBLIC_ORIGIN` configures the address this instance is reached at, for the
+  absolute URLs those tags need. Unset, it is taken from the request, which is
+  right behind the bundled nginx.
+
+### API changes
+
+- `Recipe` and `RecipeSummary` gain **`slug`**, the recipe's address in a
+  shared link. Additive.
+- `GET /api/v1/public/recipes/{id}` now accepts a slug, a slug the recipe used
+  to have, or its uuid, where before it took only a uuid. Every existing
+  request is still valid.
+- New: `GET /api/v1/public/recipes/{id}/preview.png`, the 1200×630 card for a
+  shared recipe. 404 unless the recipe is shared, like the routes beside it.
+- New, outside the versioned API because it is a page and not a call:
+  `GET /r/{slug-or-uuid}`, the shared recipe as HTML. 301 to the canonical
+  slug when reached by any other name; 404, as a small HTML page, when the
+  recipe is not shared.
 
 ## v0.3.0 — 2026-09-20
 

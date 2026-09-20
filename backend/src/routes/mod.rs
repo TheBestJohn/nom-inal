@@ -6,11 +6,13 @@ pub mod estimates;
 pub mod foods;
 pub mod keys;
 pub mod photos;
+pub mod preview;
 pub mod profile;
 pub mod public;
 pub mod recipes;
 pub mod reminders;
 pub mod search;
+pub mod share;
 pub mod targets;
 pub mod weights;
 

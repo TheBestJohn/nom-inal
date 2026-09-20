@@ -111,6 +111,13 @@ async fn main() -> anyhow::Result<()> {
 
     let api = Router::new()
         .nest("/api/v1", routes::api_router())
+        // A shared recipe's page. Served by the API rather than by the SPA
+        // because the clients that matter for it — Slack, iMessage, Discord,
+        // search engines — read the `<head>` and never run the script that
+        // would tell them which recipe it is. Not under `/api/v1`: it is a
+        // page people paste into messages, and a versioned address is the one
+        // thing such a link must not have.
+        .nest("/r", routes::share::router())
         .route(
             "/api/v1/openapi.json",
             get(|| async { Json(openapi::ApiDoc::openapi()) }),

@@ -40,6 +40,9 @@ RUN mkdir src && echo 'fn main() {}' > src/main.rs \
 
 COPY src ./src
 COPY migrations ./migrations
+# The preview card's font is compiled into the binary: the runtime image below
+# has no fonts at all, so a card drawn from a system font would come out blank.
+COPY assets ./assets
 
 # Build provenance, reported by /api/v1/health. Declared here and not at the
 # top of the stage on purpose: an ARG invalidates every layer after it, and

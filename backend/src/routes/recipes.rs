@@ -24,6 +24,7 @@ use crate::domain::recipe::{
     RecipeExport, RecipeExportBundle, RecipeExportItem, RecipeItem, RecipeItemInput, RecipeItemRow,
     RecipeRow, RecipeSummary, UpsertRecipeRequest,
 };
+use crate::domain::slug;
 use crate::error::{ApiError, ApiResult};
 use crate::extract::Json;
 use crate::services::fetch::fetch_public_page;
@@ -38,8 +39,8 @@ pub fn router() -> Router<AppState> {
         .route("/{id}/export", get(export))
 }
 
-const RECIPE_COLUMNS: &str =
-    "id, user_id, name, description, instructions, servings, is_public, created_at, updated_at";
+const RECIPE_COLUMNS: &str = "id, user_id, name, description, instructions, servings, is_public, \
+                              slug, created_at, updated_at";
 
 #[derive(Debug, Default, Deserialize, IntoParams)]
 #[serde(default)]
@@ -75,6 +76,7 @@ pub async fn list(
     struct Row {
         id: Uuid,
         user_id: Uuid,
+        slug: String,
         name: String,
         description: Option<String>,
         servings: f64,
@@ -98,7 +100,7 @@ pub async fn list(
 
     let rows: Vec<Row> = sqlx::query_as(
         r#"
-        SELECT r.id, r.user_id, r.name, r.description, r.servings, r.is_public,
+        SELECT r.id, r.user_id, r.slug, r.name, r.description, r.servings, r.is_public,
                u.display_name AS author, r.created_at, r.updated_at,
                -- The first photo uploaded is the cover. No ordering column to
                -- get wrong, and the first one is usually the finished dish.
@@ -156,6 +158,7 @@ pub async fn list(
             };
             RecipeSummary {
                 id: r.id,
+                slug: r.slug,
                 is_owner: r.user_id == user.id,
                 author: (r.user_id != user.id).then_some(r.author).flatten(),
                 is_public: r.is_public,
@@ -221,22 +224,87 @@ pub async fn insert_recipe(
     user_id: Uuid,
     body: &UpsertRecipeRequest,
 ) -> ApiResult<Uuid> {
+    // The id is minted here rather than by the column default, because the
+    // slug may need it: a name with nothing sluggable in it — only emoji,
+    // only punctuation — falls back to a short form of the id.
+    let id = Uuid::new_v4();
+    let slug = choose_slug(tx, id, &body.name).await?;
+
     let recipe: RecipeRow = sqlx::query_as(&format!(
-        "INSERT INTO recipes (user_id, name, description, instructions, servings, is_public)
-         VALUES ($1, $2, $3, $4, $5, $6)
+        "INSERT INTO recipes (id, user_id, name, description, instructions, servings, is_public, slug)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
          RETURNING {RECIPE_COLUMNS}"
     ))
+    .bind(id)
     .bind(user_id)
     .bind(body.name.trim())
     .bind(body.description.as_deref())
     .bind(body.instructions.as_deref())
     .bind(body.servings)
     .bind(body.is_public)
+    .bind(&slug)
     .fetch_one(&mut **tx)
     .await?;
 
+    record_slug(tx, recipe.id, &slug).await?;
     insert_items(tx, recipe.id, user_id, body).await?;
     Ok(recipe.id)
+}
+
+/// The slug `id` should have for `name`.
+///
+/// Called from create and from rename alike, which is the whole point: one
+/// rule in one place. It is idempotent — asked twice for the same recipe and
+/// the same name it answers the same, because a slug this recipe already
+/// holds is not a collision with itself.
+///
+/// Choosing and recording are two steps, [`record_slug`] being the second,
+/// because the history row references the recipe: the recipe has to exist
+/// before its slug can be written down. Both run in the caller's
+/// transaction, so a write that is rolled back leaves no slug reserved.
+async fn choose_slug(
+    tx: &mut Transaction<'_, Postgres>,
+    id: Uuid,
+    name: &str,
+) -> ApiResult<String> {
+    let base = match slug::slugify(name) {
+        empty if empty.is_empty() => slug::fallback_slug(id),
+        base => base,
+    };
+
+    // Every slug that could stand in the way: the base and anything suffixed
+    // from it, taken from the history rather than from the recipes currently
+    // holding one, so a slug freed by a rename is still never handed out
+    // again. This recipe's own past slugs are excluded, so renaming a recipe
+    // back to what it was called returns the address people already have.
+    let held: Vec<String> = sqlx::query_scalar(
+        "SELECT slug FROM recipe_slug_history
+         WHERE (slug = $1 OR slug LIKE $1 || '-%') AND recipe_id <> $2",
+    )
+    .bind(&base)
+    .bind(id)
+    .fetch_all(&mut **tx)
+    .await?;
+
+    Ok(slug::free_slug(&base, &held.into_iter().collect()))
+}
+
+/// Write the slug into the history, where it stays for good.
+///
+/// A slug this recipe has held before is already recorded, and recording it
+/// again is not an error — it is the same fact. The `recipes.slug` foreign
+/// key into this table is deferred, which is what lets the recipe be written
+/// first and its slug a moment later, inside the one transaction.
+async fn record_slug(tx: &mut Transaction<'_, Postgres>, id: Uuid, slug: &str) -> ApiResult<()> {
+    sqlx::query(
+        "INSERT INTO recipe_slug_history (slug, recipe_id) VALUES ($1, $2)
+         ON CONFLICT (slug) DO NOTHING",
+    )
+    .bind(slug)
+    .bind(id)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
 }
 
 /// Replace an existing recipe of `user_id`'s, header and ingredients, inside
@@ -247,9 +315,14 @@ pub async fn replace_recipe(
     id: Uuid,
     body: &UpsertRecipeRequest,
 ) -> ApiResult<bool> {
+    // Renaming re-slugs. The old slug stays in the history pointing here, so a
+    // link somebody has already sent still finds the recipe; the page then
+    // says, once and permanently, where it lives now.
+    let slug = choose_slug(tx, id, &body.name).await?;
+
     let updated: Option<RecipeRow> = sqlx::query_as(&format!(
         "UPDATE recipes SET name = $3, description = $4, instructions = $5, servings = $6,
-                            is_public = $7, updated_at = now()
+                            is_public = $7, slug = $8, updated_at = now()
          WHERE id = $1 AND user_id = $2
          RETURNING {RECIPE_COLUMNS}"
     ))
@@ -260,12 +333,14 @@ pub async fn replace_recipe(
     .bind(body.instructions.as_deref())
     .bind(body.servings)
     .bind(body.is_public)
+    .bind(&slug)
     .fetch_optional(&mut **tx)
     .await?;
 
     if updated.is_none() {
         return Ok(false);
     }
+    record_slug(tx, id, &slug).await?;
 
     // Ingredient list is replaced wholesale — simpler and less error-prone than
     // diffing, and the list is small enough that the rewrite cost is irrelevant.
@@ -555,6 +630,7 @@ pub async fn load_recipe(state: &AppState, viewer: Option<Uuid>, id: Uuid) -> Ap
     struct Row {
         id: Uuid,
         user_id: Uuid,
+        slug: String,
         name: String,
         description: Option<String>,
         instructions: Option<String>,
@@ -566,7 +642,7 @@ pub async fn load_recipe(state: &AppState, viewer: Option<Uuid>, id: Uuid) -> Ap
     }
 
     let recipe: Row = sqlx::query_as(
-        "SELECT r.id, r.user_id, r.name, r.description, r.instructions, r.servings,
+        "SELECT r.id, r.user_id, r.slug, r.name, r.description, r.instructions, r.servings,
                 r.is_public, u.display_name AS author, r.created_at, r.updated_at
          FROM recipes r JOIN users u ON u.id = r.user_id
          WHERE r.id = $1 AND (r.user_id = $2 OR r.is_public)",
@@ -651,6 +727,7 @@ pub async fn load_recipe(state: &AppState, viewer: Option<Uuid>, id: Uuid) -> Ap
 
     Ok(Recipe {
         id: recipe.id,
+        slug: recipe.slug,
         is_owner,
         is_public: recipe.is_public,
         author: (!is_owner).then_some(author),

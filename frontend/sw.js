@@ -76,6 +76,12 @@ self.addEventListener('fetch', (event) => {
   // Every other API call, and MCP, go straight to the network.
   if (url.pathname.startsWith('/api/') || url.pathname === '/mcp') return
 
+  // A shared recipe's page is a document the server renders about somebody
+  // else's recipe, not part of this shell. It changes whenever they correct
+  // the recipe, and it has nothing to do with this app working offline, so
+  // the worker stays out of it entirely.
+  if (url.pathname.startsWith('/r/')) return
+
   // A page load: the freshest shell if it can be had, the cached one if not.
   if (request.mode === 'navigate') {
     event.respondWith(networkFirst(request, SHELL, '/'))

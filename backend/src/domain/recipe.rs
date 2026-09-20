@@ -94,6 +94,10 @@ pub struct RecipeItem {
 #[derive(Debug, Serialize, ToSchema)]
 pub struct RecipeSummary {
     pub id: Uuid,
+    /// The word this recipe's shared link is spelled with, from its name.
+    /// Unique across the instance, and kept in `recipe_slug_history` when it
+    /// changes so an already-shared link still resolves.
+    pub slug: String,
     pub name: String,
     pub description: Option<String>,
     pub servings: f64,
@@ -119,6 +123,9 @@ pub struct RecipeSummary {
 #[derive(Debug, Serialize, ToSchema)]
 pub struct Recipe {
     pub id: Uuid,
+    /// The word this recipe's shared link is spelled with. See
+    /// [`RecipeSummary::slug`].
+    pub slug: String,
     pub name: String,
     pub description: Option<String>,
     pub instructions: Option<String>,
@@ -448,7 +455,10 @@ fn plural(n: f64) -> &'static str {
 }
 
 /// "2" rather than "2.0", "1.5" rather than "1.500000".
-fn trim_float(v: f64) -> String {
+///
+/// Shared with the shared-recipe page and the preview card, so a quantity
+/// reads the same in the Markdown export, in the HTML and in the picture.
+pub fn trim_float(v: f64) -> String {
     let s = format!("{:.2}", v);
     let s = s.trim_end_matches('0').trim_end_matches('.');
     if s.is_empty() {
@@ -458,7 +468,8 @@ fn trim_float(v: f64) -> String {
     }
 }
 
-fn r1(v: f64) -> String {
+/// One decimal place, trailing zero trimmed.
+pub fn r1(v: f64) -> String {
     trim_float((v * 10.0).round() / 10.0)
 }
 
