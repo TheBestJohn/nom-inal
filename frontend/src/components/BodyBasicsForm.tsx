@@ -1,10 +1,11 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
 import { api } from '@/api/endpoints'
-import type { Profile } from '@/api/types'
+import type { Profile, Units } from '@/api/types'
 import { useAuth } from '@/lib/auth'
-import { today } from '@/lib/format'
+import { cmToFtIn, ftInToCm, round, today, weightToKg, weightUnit, weightValue } from '@/lib/format'
+import { useUnits } from '@/lib/useUnits'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import {
@@ -24,7 +25,127 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
+import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { ErrorNote, Spinner } from '@/components/shared'
+
+/**
+ * A weight in the preferred unit, converted to kilograms on the way in.
+ *
+ * Module scope, since a component declared inside a render body is a new
+ * type on every render and the input would lose focus on each keystroke.
+ * The field holds text so a half-typed number is not rounded under you.
+ */
+function WeightField({
+  id,
+  label,
+  kg,
+  units,
+  placeholder,
+  onChange,
+}: {
+  id: string
+  label: string
+  kg: number | null | undefined
+  units: Units
+  placeholder?: string
+  onChange: (kg: number | null) => void
+}) {
+  const [text, setText] = useState(kg == null ? '' : String(weightValue(kg, units)))
+  const emitted = useRef<number | null | undefined>(undefined)
+  // Re-derive the text when the unit changes, or when the value changes from
+  // outside — the profile arriving, say — but never from the field's own
+  // keystrokes: rewriting "18." as "18" under someone's cursor is how a
+  // controlled number input eats the decimal point.
+  const [shown, setShown] = useState({ kg, units })
+  if (shown.units !== units || (shown.kg !== kg && kg !== emitted.current)) {
+    setShown({ kg, units })
+    setText(kg == null ? '' : String(weightValue(kg, units)))
+  } else if (shown.kg !== kg) {
+    setShown({ kg, units })
+  }
+  return (
+    <div className="space-y-1.5">
+      <Label htmlFor={id}>
+        {label} ({weightUnit(units)})
+      </Label>
+      <Input
+        id={id}
+        type="number"
+        step="any"
+        placeholder={placeholder}
+        value={text}
+        onChange={(e) => {
+          setText(e.target.value)
+          const value = Number(e.target.value)
+          const next =
+            e.target.value === '' || !Number.isFinite(value) ? null : weightToKg(value, units)
+          emitted.current = next
+          onChange(next)
+        }}
+      />
+    </div>
+  )
+}
+
+/**
+ * Height as centimetres, or as feet and inches that become centimetres.
+ * Storage is metric; the two boxes are how a height is said aloud.
+ */
+function HeightField({
+  cm,
+  units,
+  onChange,
+}: {
+  cm: number | null | undefined
+  units: Units
+  onChange: (cm: number | null) => void
+}) {
+  if (units !== 'imperial') {
+    return (
+      <div className="space-y-1.5">
+        <Label htmlFor="s-height">Height (cm)</Label>
+        <Input
+          id="s-height"
+          type="number"
+          step="any"
+          value={cm ?? ''}
+          onChange={(e) => onChange(e.target.value === '' ? null : Number(e.target.value))}
+        />
+      </div>
+    )
+  }
+  const { feet, inches } = cm == null ? { feet: NaN, inches: NaN } : cmToFtIn(cm)
+  const set = (f: number, i: number) =>
+    onChange(Number.isFinite(f) || Number.isFinite(i) ? round(ftInToCm(f || 0, i || 0), 1) : null)
+  return (
+    <div className="space-y-1.5">
+      <Label htmlFor="s-height-ft">Height (ft, in)</Label>
+      <div className="grid grid-cols-2 gap-2">
+        <Input
+          id="s-height-ft"
+          type="number"
+          min={0}
+          step={1}
+          placeholder="ft"
+          aria-label="Height, feet"
+          value={Number.isFinite(feet) ? feet : ''}
+          onChange={(e) => set(Number(e.target.value), inches)}
+        />
+        <Input
+          id="s-height-in"
+          type="number"
+          min={0}
+          max={11}
+          step={1}
+          placeholder="in"
+          aria-label="Height, inches"
+          value={Number.isFinite(inches) ? inches : ''}
+          onChange={(e) => set(feet, Number(e.target.value))}
+        />
+      </div>
+    </div>
+  )
+}
 
 /**
  * The labels only. The multipliers used to live beside them; they now live on
@@ -64,9 +185,11 @@ export default function BodyBasicsForm({
   submitLabel?: string
 }) {
   const { user, setUser } = useAuth()
+  const { units, setUnits, saving: savingUnits } = useUnits()
   const queryClient = useQueryClient()
   const [form, setForm] = useState<Partial<Profile>>({})
-  const [weight, setWeight] = useState('')
+  // Kilograms, whatever unit the box shows: converted at the field.
+  const [weightKg, setWeightKg] = useState<number | null>(null)
   const [saved, setSaved] = useState(false)
 
   const profile = useQuery({ queryKey: ['profile'], queryFn: () => api.getProfile() })
@@ -83,9 +206,8 @@ export default function BodyBasicsForm({
     mutationFn: async () => {
       // A weight typed here is a weigh-in, not a profile field: the estimate
       // reads the scale, and this is the scale.
-      const kg = Number(weight)
-      if (weight.trim() && Number.isFinite(kg) && kg > 0) {
-        await api.logWeight({ recorded_on: today(), weight_kg: kg })
+      if (weightKg !== null && weightKg > 0) {
+        await api.logWeight({ recorded_on: today(), weight_kg: round(weightKg, 2) })
       }
       return api.updateProfile({
         display_name: form.display_name,
@@ -94,7 +216,10 @@ export default function BodyBasicsForm({
         height_cm: form.height_cm,
         activity_level: form.activity_level,
         goal: form.goal,
-        target_weight_kg: form.target_weight_kg,
+        // Converted from whatever unit was typed, so trimmed to what a
+        // scale could show rather than stored to sixteen places.
+        target_weight_kg:
+          form.target_weight_kg == null ? form.target_weight_kg : round(form.target_weight_kg, 2),
       })
     },
     onSuccess: (updated) => {
@@ -112,9 +237,6 @@ export default function BodyBasicsForm({
 
   const set = <K extends keyof Profile>(key: K, value: Profile[K]) =>
     setForm((f) => ({ ...f, [key]: value }))
-
-  const num = (key: keyof Profile) => (e: React.ChangeEvent<HTMLInputElement>) =>
-    set(key as never, (e.target.value === '' ? null : Number(e.target.value)) as never)
 
   if (profile.isLoading) return <Spinner />
 
@@ -136,6 +258,28 @@ export default function BodyBasicsForm({
         )}
       </CardHeader>
       <CardContent className="space-y-4">
+        {/* Units are a display preference and saved as soon as they are
+            chosen, separately from the figures: storage stays metric, so
+            switching converts what is shown and never what is kept. Food
+            amounts are not affected — they are grams, and "a cup" is a
+            portion on the food rather than a unit. */}
+        <div className="space-y-1.5">
+          <Label>Units</Label>
+          <ToggleGroup
+            type="single"
+            value={units}
+            onValueChange={(v) => v && setUnits(v as Units)}
+            disabled={savingUnits}
+            aria-label="Units for body measurements"
+          >
+            <ToggleGroupItem value="metric">kg, cm</ToggleGroupItem>
+            <ToggleGroupItem value="imperial">lb, ft/in</ToggleGroupItem>
+          </ToggleGroup>
+          <p className="text-muted-foreground text-xs">
+            How weight and height are shown and typed, everywhere. Food is always in grams.
+          </p>
+        </div>
+
         <div className="grid gap-3 sm:grid-cols-2">
           {!compact && (
             <>
@@ -178,39 +322,24 @@ export default function BodyBasicsForm({
               </SelectContent>
             </Select>
           </div>
-          <div className="space-y-1.5">
-            <Label htmlFor="s-height">Height (cm)</Label>
-            <Input
-              id="s-height"
-              type="number"
-              step="any"
-              value={form.height_cm ?? ''}
-              onChange={num('height_cm')}
-            />
-          </div>
+          <HeightField cm={form.height_cm} units={units} onChange={(cm) => set('height_cm', cm)} />
           {compact ? (
-            <div className="space-y-1.5">
-              <Label htmlFor="s-weight">Current weight (kg)</Label>
-              <Input
-                id="s-weight"
-                type="number"
-                step="any"
-                placeholder={lastKg ? `last weigh-in ${lastKg}` : ''}
-                value={weight}
-                onChange={(e) => setWeight(e.target.value)}
-              />
-            </div>
+            <WeightField
+              id="s-weight"
+              label="Current weight"
+              kg={weightKg}
+              units={units}
+              placeholder={lastKg ? `last weigh-in ${weightValue(lastKg, units, 1)}` : ''}
+              onChange={setWeightKg}
+            />
           ) : (
-            <div className="space-y-1.5">
-              <Label htmlFor="s-target">Target weight (kg)</Label>
-              <Input
-                id="s-target"
-                type="number"
-                step="any"
-                value={form.target_weight_kg ?? ''}
-                onChange={num('target_weight_kg')}
-              />
-            </div>
+            <WeightField
+              id="s-target"
+              label="Target weight"
+              kg={form.target_weight_kg}
+              units={units}
+              onChange={(kg) => set('target_weight_kg', kg)}
+            />
           )}
           <div className="space-y-1.5 sm:col-span-2">
             <Label htmlFor="s-activity">Activity level</Label>

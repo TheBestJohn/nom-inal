@@ -222,6 +222,13 @@ export default function FoodDetailDialog({
                     </div>
                   ))}
 
+                  {food.portions.length > 0 && (
+                    <p className="text-muted-foreground text-xs">
+                      Portions:{' '}
+                      {food.portions.map((p) => `${p.label} · ${grams(p.grams, 0)}`).join(', ')}
+                    </p>
+                  )}
+
                   <Separator />
 
                   {/* Variants are the reason a single row is not enough: raw

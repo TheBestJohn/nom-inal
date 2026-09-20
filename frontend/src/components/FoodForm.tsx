@@ -1,15 +1,133 @@
 import { useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { ChevronDown, ChevronRight } from 'lucide-react'
+import { ChevronDown, ChevronRight, Plus, X } from 'lucide-react'
 
 import { api } from '@/api/endpoints'
 import type { FoodInput } from '@/api/endpoints'
 import type { Food, FoodDetail, NutrientBasis } from '@/api/types'
+import { grams } from '@/lib/format'
+import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { ErrorNote } from '@/components/shared'
+
+/**
+ * A household portion as the form holds it. `id` is set for one already on
+ * the food; a new one has none until it is saved.
+ */
+interface PortionDraft {
+  id?: string
+  label: string
+  grams: number
+  source: string
+}
+
+/**
+ * The portions list: what is on the food, plus what has been typed since.
+ *
+ * Module scope, like `NumField` below and for the same reason. The rows are
+ * edited in place and written when the food is saved, so a new food and a
+ * correction go through one form with one Save.
+ */
+function PortionsEditor({
+  portions,
+  onChange,
+}: {
+  portions: PortionDraft[]
+  onChange: (next: PortionDraft[]) => void
+}) {
+  const [label, setLabel] = useState('')
+  const [weight, setWeight] = useState('')
+
+  const add = () => {
+    const name = label.trim()
+    const value = Number(weight)
+    if (!name || !(value > 0)) return
+    if (portions.some((p) => p.label.toLowerCase() === name.toLowerCase())) return
+    onChange([...portions, { label: name, grams: value, source: 'user' }])
+    setLabel('')
+    setWeight('')
+  }
+
+  return (
+    <div className="space-y-2">
+      <Label>Household portions</Label>
+      {portions.length > 0 && (
+        <ul className="space-y-1">
+          {portions.map((p) => (
+            <li
+              key={p.id ?? p.label}
+              className="flex items-center gap-2 rounded-md border px-3 py-1.5 text-sm"
+            >
+              <span className="min-w-0 flex-1 truncate">
+                {p.label} · {grams(p.grams, 0)}
+              </span>
+              {p.source !== 'user' && (
+                <Badge variant="outline" className="text-[10px] tracking-wide uppercase">
+                  {p.source}
+                </Badge>
+              )}
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon-sm"
+                aria-label={`Remove portion ${p.label}`}
+                onClick={() => onChange(portions.filter((x) => x !== p))}
+              >
+                <X />
+              </Button>
+            </li>
+          ))}
+        </ul>
+      )}
+      <div className="grid grid-cols-[1fr_6rem_auto] gap-2">
+        <Input
+          placeholder="1 cup, 1 slice, 1 mug…"
+          aria-label="Portion label"
+          value={label}
+          onChange={(e) => setLabel(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              e.preventDefault()
+              add()
+            }
+          }}
+        />
+        <Input
+          type="number"
+          min={0}
+          step="any"
+          placeholder="grams"
+          aria-label="Portion grams"
+          value={weight}
+          onChange={(e) => setWeight(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              e.preventDefault()
+              add()
+            }
+          }}
+        />
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          onClick={add}
+          disabled={!label.trim() || !(Number(weight) > 0)}
+          aria-label="Add portion"
+        >
+          <Plus /> Add
+        </Button>
+      </div>
+      <p className="text-muted-foreground text-xs">
+        How many grams a cup, a slice or a mug of this is. Offered beside grams when logging; the
+        entry itself is still grams.
+      </p>
+    </div>
+  )
+}
 
 /** The nutrient fields, so scaling them between bases is one list, not eight. */
 const NUTRIENT_FIELDS = [
@@ -190,8 +308,15 @@ export default function FoodForm({
 
   const perServing = form.nutrient_basis === 'per_serving'
 
+  // Portions travel with the form but not with the food's own request: they
+  // are rows of their own, added and removed one at a time, so the save
+  // writes the food first and then settles the difference.
+  const [portions, setPortions] = useState<PortionDraft[]>(() =>
+    (food?.portions ?? []).map((p) => ({ ...p })),
+  )
+
   const save = useMutation({
-    mutationFn: () => {
+    mutationFn: async () => {
       const payload: FoodInput = {
         ...form,
         name: form.name.trim(),
@@ -209,7 +334,14 @@ export default function FoodForm({
         variant_label: form.variant_label ? form.variant_label.trim() : null,
         edit_summary: form.edit_summary || null,
       }
-      return food ? api.updateFood(food.id, payload) : api.createFood(payload)
+      let saved = food ? await api.updateFood(food.id, payload) : await api.createFood(payload)
+
+      const removed = (food?.portions ?? []).filter((p) => !portions.some((d) => d.id === p.id))
+      const added = portions.filter((p) => !p.id)
+      for (const p of removed) saved = await api.removePortion(saved.id, p.id)
+      for (const p of added)
+        saved = await api.addPortion(saved.id, { label: p.label, grams: p.grams })
+      return saved
     },
     onSuccess: (saved) => {
       queryClient.invalidateQueries({ queryKey: ['foods'] })
@@ -370,6 +502,12 @@ export default function FoodForm({
           </div>
         </div>
       )}
+
+      {/* Not behind "More nutrients": a portion is not a nutrient, and it is
+          the one thing a person adding a food from their own kitchen knows
+          better than any database. A variant inherits none, since a cup of
+          cooked rice does not weigh what a cup of raw rice does. */}
+      {!variantOf && <PortionsEditor portions={portions} onChange={setPortions} />}
 
       {askForSummary && (
         <div className="space-y-1.5">

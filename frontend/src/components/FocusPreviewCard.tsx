@@ -3,7 +3,9 @@ import { useQuery } from '@tanstack/react-query'
 
 import { api } from '@/api/endpoints'
 import type { FocusPreview, TrackingFocus } from '@/api/types'
+import { weight } from '@/lib/format'
 import { nutrientMeta } from '@/lib/nutrients'
+import { useUnits } from '@/lib/useUnits'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
 import { ErrorNote, Spinner } from '@/components/shared'
@@ -27,6 +29,7 @@ const listMissing = (fields: string[]) => fields.map((f) => FIELD_LABELS[f] ?? f
  * a preview quietly short of a row is worse than one that says why.
  */
 export function FocusPreviewBody({ preview }: { preview: FocusPreview }) {
+  const { units } = useUnits()
   const goal = GOALS.find((g) => g.value === preview.goal)
 
   return (
@@ -106,7 +109,7 @@ export function FocusPreviewBody({ preview }: { preview: FocusPreview }) {
         <p className="text-muted-foreground text-xs">
           Estimate: {Math.round(preview.estimate.bmr_kcal)} kcal resting ×{' '}
           {preview.estimate.activity_factor} activity = {Math.round(preview.estimate.tdee_kcal)}{' '}
-          kcal a day, from {preview.estimate.weight_kg} kg
+          kcal a day, from {weight(preview.estimate.weight_kg, units)}
           {preview.estimate.weight_source === 'target_weight'
             ? ' (your target weight — no weigh-in yet)'
             : ''}

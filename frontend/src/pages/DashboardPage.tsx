@@ -14,7 +14,8 @@ import {
 
 import { api } from '@/api/endpoints'
 import { useAuth } from '@/lib/auth'
-import { addDays, kcal, kg, shortDate, signed, today } from '@/lib/format'
+import { addDays, kcal, shortDate, today, weight, weightChange, weightValue } from '@/lib/format'
+import { useUnits } from '@/lib/useUnits'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import {
@@ -188,6 +189,7 @@ function PercentChart({
 
 export default function DashboardPage() {
   const { user, setUser } = useAuth()
+  const { units } = useUnits()
   const to = today()
   const from = addDays(to, -29)
 
@@ -211,7 +213,7 @@ export default function DashboardPage() {
   const weightSeries = (weights.data ?? [])
     .slice()
     .reverse()
-    .map((w) => ({ date: shortDate(w.recorded_on), kg: w.weight_kg }))
+    .map((w) => ({ date: shortDate(w.recorded_on), value: weightValue(w.weight_kg, units) }))
 
   const charted = orderNutrients(user?.chart_nutrients ?? (['calories_kcal'] as Nutrient[]))
   const mode: ChartMode = user?.chart_mode ?? 'percent'
@@ -308,7 +310,7 @@ export default function DashboardPage() {
               <>
                 <div className="flex flex-wrap items-baseline gap-3">
                   <strong className="tabular text-3xl font-bold tracking-tight">
-                    {kg(stats.data.latest_kg)}
+                    {weight(stats.data.latest_kg, units)}
                   </strong>
                   <span
                     className={cn(
@@ -316,16 +318,16 @@ export default function DashboardPage() {
                       (stats.data.change_kg ?? 0) <= 0 ? 'text-success' : 'text-destructive',
                     )}
                   >
-                    {signed(stats.data.change_kg)} kg in 30 days
+                    {weightChange(stats.data.change_kg, units)} in 30 days
                   </span>
                 </div>
                 <dl className="grid grid-cols-3 gap-3 text-sm">
-                  <Stat label="7-entry avg" value={kg(stats.data.moving_average_7_kg)} />
+                  <Stat label="7-entry avg" value={weight(stats.data.moving_average_7_kg, units)} />
                   <Stat
                     label="Range"
-                    value={`${kg(stats.data.min_kg)} – ${kg(stats.data.max_kg)}`}
+                    value={`${weight(stats.data.min_kg, units)} – ${weight(stats.data.max_kg, units)}`}
                   />
-                  <Stat label="Target" value={kg(user?.target_weight_kg)} />
+                  <Stat label="Target" value={weight(user?.target_weight_kg, units)} />
                 </dl>
               </>
             ) : (
@@ -463,7 +465,8 @@ export default function DashboardPage() {
                 <Tooltip contentStyle={TOOLTIP_STYLE} />
                 <Line
                   type="monotone"
-                  dataKey="kg"
+                  dataKey="value"
+                  name={units === 'imperial' ? 'lb' : 'kg'}
                   stroke="var(--chart-2)"
                   strokeWidth={2}
                   dot={{ r: 2 }}

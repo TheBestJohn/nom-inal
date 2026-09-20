@@ -1,5 +1,7 @@
 /** Formatting helpers kept in one place so units read the same on every screen. */
 
+import type { Units } from '@/api/types'
+
 export const kcal = (v: number | null | undefined) =>
   v === null || v === undefined ? '—' : `${Math.round(v).toLocaleString()} kcal`
 
@@ -63,10 +65,65 @@ export const titleCase = (s: string) => s.charAt(0).toUpperCase() + s.slice(1)
 export const sourceLabel = (source: string) =>
   source === 'usda' ? 'USDA' : source === 'off' ? 'Open Food Facts' : 'Custom'
 
-/** lb <-> kg helpers: the API is metric, the UI lets you pick. */
+/**
+ * Units are a display preference; storage is metric.
+ *
+ * Everything below converts at the edge: kilograms and centimetres come off
+ * the wire, are shown in the preferred unit, and whatever is typed goes back
+ * as kilograms and centimetres. The API never sees a pound. Food amounts are
+ * deliberately not here — a diary entry is grams whatever the preference says,
+ * and the cases people mean ("a cup", "a slice") are household portions kept
+ * on the food, not a unit switch.
+ */
 export const LB_PER_KG = 2.2046226218
+export const CM_PER_IN = 2.54
 export const kgToLb = (v: number) => v * LB_PER_KG
 export const lbToKg = (v: number) => v / LB_PER_KG
+export const cmToIn = (v: number) => v / CM_PER_IN
+export const inToCm = (v: number) => v * CM_PER_IN
+
+/** Body weight in the preferred unit: "82.5 kg" or "181.9 lb". */
+export const weight = (kg: number | null | undefined, units: Units, digits = 1) =>
+  kg === null || kg === undefined
+    ? '—'
+    : units === 'imperial'
+      ? `${round(kgToLb(kg), digits)} lb`
+      : `${round(kg, digits)} kg`
+
+/** A signed weight change in the preferred unit: "-1.5 kg", "+2.2 lb". */
+export const weightChange = (kg: number | null | undefined, units: Units, digits = 1) =>
+  kg === null || kg === undefined
+    ? '—'
+    : units === 'imperial'
+      ? `${signed(kgToLb(kg), digits)} lb`
+      : `${signed(kg, digits)} kg`
+
+/** A bare weight figure in the preferred unit, for inputs and chart series. */
+export const weightValue = (kg: number, units: Units, digits = 2) =>
+  round(units === 'imperial' ? kgToLb(kg) : kg, digits)
+
+/** What was typed in the preferred unit, as the kilograms the API stores. */
+export const weightToKg = (value: number, units: Units) =>
+  units === 'imperial' ? lbToKg(value) : value
+
+/** Height in the preferred unit: "180 cm" or "5 ft 11 in". */
+export const height = (cm: number | null | undefined, units: Units) => {
+  if (cm === null || cm === undefined) return '—'
+  if (units !== 'imperial') return `${round(cm, 0)} cm`
+  const { feet, inches } = cmToFtIn(cm)
+  return `${feet} ft ${inches} in`
+}
+
+/** Centimetres as whole feet and the remaining inches, the way a height is said. */
+export function cmToFtIn(cm: number): { feet: number; inches: number } {
+  const totalInches = Math.round(cmToIn(cm))
+  return { feet: Math.floor(totalInches / 12), inches: totalInches % 12 }
+}
+
+export const ftInToCm = (feet: number, inches: number) => inToCm(feet * 12 + inches)
+
+/** The unit word alone, for labels: "kg" or "lb". */
+export const weightUnit = (units: Units) => (units === 'imperial' ? 'lb' : 'kg')
 
 /**
  * "3 weeks ago", from a timestamp.
