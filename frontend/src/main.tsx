@@ -22,6 +22,18 @@ const queryClient = new QueryClient({
   },
 })
 
+// The worker keeps the built shell and today's diary for an offline open.
+// Production only: in development Vite serves modules by their source path,
+// there is no built shell to keep, and a worker holding yesterday's build
+// is exactly the confusion a dev server exists to avoid.
+if (import.meta.env.PROD && 'serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/sw.js').catch(() => {
+      // No worker is a slower open, not a broken app.
+    })
+  })
+}
+
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <QueryClientProvider client={queryClient}>

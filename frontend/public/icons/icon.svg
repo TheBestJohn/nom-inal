@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <!-- The primary green from the theme tokens (oklch(0.52 0.09 158)), and a
+       bowl with a leaf: the salad the header has always worn, drawn simply
+       enough to read at 48 px. -->
+  <rect width="512" height="512" rx="112" fill="#357855"/>
+  <path d="M84 236h344a172 172 0 0 1-344 0z" fill="#f7fbf9"/>
+  <path d="M256 236c4-96 60-152 156-160-4 92-56 148-156 160z" fill="#cfe9d8"/>
+  <path d="M262 232c40-40 72-72 112-104" stroke="#357855" stroke-width="14" stroke-linecap="round" fill="none"/>
+  <rect x="160" y="424" width="192" height="26" rx="13" fill="#f7fbf9" opacity=".9"/>
+</svg>
