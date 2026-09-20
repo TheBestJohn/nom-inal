@@ -283,14 +283,25 @@ pub async fn stats(
 #[derive(Debug, Serialize, FromRow, ToSchema)]
 pub struct InstanceSettings {
     pub food_quorum: i64,
-    /// Null while the instance is still at its installation default, which is
+    /// Null while the quorum is still at its installation default, which is
     /// also the state in which `FOOD_QUORUM` can still seed it at boot.
+    pub food_quorum_updated_at: Option<DateTime<Utc>>,
+    /// Whether `POST /auth/register` accepts new accounts. The first account
+    /// on an empty instance is allowed regardless, so closing this can never
+    /// lock a fresh install out of itself.
+    pub allow_registration: bool,
+    /// Null while sign-ups are still at their installation default, in which
+    /// state `ALLOW_REGISTRATION` can still seed them at boot.
+    pub allow_registration_updated_at: Option<DateTime<Utc>>,
+    /// When anything here was last saved from the admin area, and by whom.
     pub updated_at: Option<DateTime<Utc>>,
     pub updated_by_name: Option<String>,
 }
 
 const SETTINGS_COLUMNS: &str = r#"
-    s.food_quorum::bigint AS food_quorum, s.updated_at, u.display_name AS updated_by_name
+    s.food_quorum::bigint AS food_quorum, s.food_quorum_updated_at,
+    s.allow_registration, s.allow_registration_updated_at,
+    s.updated_at, u.display_name AS updated_by_name
     FROM instance_settings s LEFT JOIN users u ON u.id = s.updated_by
 "#;
 
@@ -313,13 +324,20 @@ pub async fn settings(
     ))
 }
 
-#[derive(Debug, Deserialize, Validate, ToSchema)]
+/// Every field is optional and an omitted one is left alone, so a client that
+/// only knows about the quorum keeps working, and saving one setting does not
+/// take the others over from the environment.
+#[derive(Debug, Default, Deserialize, Validate, ToSchema)]
+#[serde(default)]
 pub struct UpdateSettingsRequest {
     /// Net confirmations a food revision needs to count as verified. 1 is the
     /// right answer on a single-user instance, where a second opinion is never
     /// coming; you still cannot confirm your own edit, so it stays meaningful.
     #[validate(range(min = 1, max = 50, message = "must be between 1 and 50"))]
-    pub food_quorum: i64,
+    pub food_quorum: Option<i64>,
+    /// Whether new accounts may be created. Close it once everyone who should
+    /// have an account has one; an empty instance still admits its first.
+    pub allow_registration: Option<bool>,
 }
 
 #[utoipa::path(
@@ -338,51 +356,71 @@ pub async fn update_settings(
     Json(body): Json<UpdateSettingsRequest>,
 ) -> ApiResult<Json<InstanceSettings>> {
     body.validate()?;
+    if body.food_quorum.is_none() && body.allow_registration.is_none() {
+        return Err(ApiError::bad_request("nothing to change"));
+    }
 
     let mut tx = state.db.begin().await?;
 
+    // Each setting stamps its own marker only when it was actually sent, since
+    // that marker is what stops the environment seeding it at the next boot;
+    // the row-level stamp records the last save of anything, for attribution.
     sqlx::query(
-        "UPDATE instance_settings
-            SET food_quorum = $1, updated_at = now(), updated_by = $2",
+        "UPDATE instance_settings SET
+            food_quorum = coalesce($1, food_quorum),
+            food_quorum_updated_at = CASE
+                WHEN $1::int IS NULL THEN food_quorum_updated_at ELSE now() END,
+            allow_registration = coalesce($2, allow_registration),
+            allow_registration_updated_at = CASE
+                WHEN $2::bool IS NULL THEN allow_registration_updated_at ELSE now() END,
+            updated_at = now(), updated_by = $3",
     )
-    .bind(body.food_quorum as i32)
+    .bind(body.food_quorum.map(|q| q as i32))
+    .bind(body.allow_registration)
     .bind(admin.id)
     .execute(&mut *tx)
     .await?;
 
-    // `verified_at` caches a comparison against the quorum, so moving the
-    // quorum invalidates every one of them at once. Recomputing here, in the
-    // same transaction, is what keeps the cache honest: lowering the threshold
-    // promotes the foods that already had enough support, and raising it demotes
-    // the ones that no longer do, without waiting for someone to vote again.
-    //
-    // A whole-table update is fine because this runs when an administrator
-    // changes a policy, not on any request path, and it touches only
-    // `verified_at` -- which the snapshot function excludes, so it creates no
-    // revisions and invalidates nobody's votes.
-    let resettled = sqlx::query(
-        "UPDATE foods SET
-            verified_at = CASE
-              WHEN food_is_verified(id, revision) THEN coalesce(verified_at, now())
-              ELSE NULL END,
-            disputed_at = CASE
-              WHEN food_is_disputed(id, revision) THEN coalesce(disputed_at, now())
-              ELSE NULL END
-         WHERE verified_at IS NOT NULL
-            OR disputed_at IS NOT NULL
-            OR food_is_verified(id, revision)
-            OR food_is_disputed(id, revision)",
-    )
-    .execute(&mut *tx)
-    .await?;
+    if let Some(quorum) = body.food_quorum {
+        // `verified_at` caches a comparison against the quorum, so moving the
+        // quorum invalidates every one of them at once. Recomputing here, in
+        // the same transaction, is what keeps the cache honest: lowering the
+        // threshold promotes the foods that already had enough support, and
+        // raising it demotes the ones that no longer do, without waiting for
+        // someone to vote again.
+        //
+        // A whole-table update is fine because this runs when an administrator
+        // changes a policy, not on any request path, and it touches only
+        // `verified_at` -- which the snapshot function excludes, so it creates
+        // no revisions and invalidates nobody's votes.
+        let resettled = sqlx::query(
+            "UPDATE foods SET
+                verified_at = CASE
+                  WHEN food_is_verified(id, revision) THEN coalesce(verified_at, now())
+                  ELSE NULL END,
+                disputed_at = CASE
+                  WHEN food_is_disputed(id, revision) THEN coalesce(disputed_at, now())
+                  ELSE NULL END
+             WHERE verified_at IS NOT NULL
+                OR disputed_at IS NOT NULL
+                OR food_is_verified(id, revision)
+                OR food_is_disputed(id, revision)",
+        )
+        .execute(&mut *tx)
+        .await?;
+
+        tracing::info!(
+            quorum,
+            foods_resettled = resettled.rows_affected(),
+            "food quorum changed"
+        );
+    }
+
+    if let Some(open) = body.allow_registration {
+        tracing::info!(open, "registration setting changed");
+    }
 
     tx.commit().await?;
-
-    tracing::info!(
-        quorum = body.food_quorum,
-        foods_resettled = resettled.rows_affected(),
-        "food quorum changed"
-    );
 
     settings(State(state), admin).await
 }

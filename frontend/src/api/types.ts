@@ -232,9 +232,20 @@ export interface AdminUserRow {
 
 export interface InstanceSettings {
   food_quorum: number
-  /** Null while the instance is still at its installation default. */
+  /** Null while the quorum is still at its installation default. */
+  food_quorum_updated_at: string | null
+  /** Whether new accounts may be created. An empty instance admits its first regardless. */
+  allow_registration: boolean
+  /** Null while sign-ups are still at their installation default. */
+  allow_registration_updated_at: string | null
+  /** When anything here was last saved from the admin area, and by whom. */
   updated_at: string | null
   updated_by_name: string | null
+}
+
+/** Whether `POST /auth/register` would accept a new account right now. */
+export interface RegistrationStatus {
+  open: boolean
 }
 
 export interface AdminStats {

@@ -12,11 +12,9 @@ pub enum ApiError {
     BadRequest(String),
     #[error("unauthorized")]
     Unauthorized,
-    #[error("forbidden")]
-    Forbidden,
-    /// Forbidden, with a reason worth telling the caller. Plain `Forbidden` is
-    /// right when explaining would leak something; most of the time it isn't,
-    /// and "you can't do that" with no reason just produces a support ticket.
+    /// Forbidden, with a reason worth telling the caller. A bare "forbidden"
+    /// with no reason just produces a support ticket; where explaining would
+    /// leak something, `Unauthorized` is usually the right answer instead.
     #[error("{0}")]
     ForbiddenReason(String),
     #[error("{0} not found")]
@@ -54,7 +52,7 @@ impl ApiError {
         match self {
             Self::BadRequest(_) => (StatusCode::BAD_REQUEST, "bad_request"),
             Self::Unauthorized => (StatusCode::UNAUTHORIZED, "unauthorized"),
-            Self::Forbidden | Self::ForbiddenReason(_) => (StatusCode::FORBIDDEN, "forbidden"),
+            Self::ForbiddenReason(_) => (StatusCode::FORBIDDEN, "forbidden"),
             Self::NotFound(_) => (StatusCode::NOT_FOUND, "not_found"),
             Self::Conflict(_) => (StatusCode::CONFLICT, "conflict"),
             Self::UpstreamUnavailable(_) => (StatusCode::BAD_GATEWAY, "upstream_unavailable"),

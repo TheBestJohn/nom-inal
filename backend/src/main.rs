@@ -59,19 +59,33 @@ async fn main() -> anyhow::Result<()> {
     sqlx::migrate!("./migrations").run(&db).await?;
     tracing::info!("migrations applied");
 
-    // Seed the quorum from the environment, but only while it is still at its
-    // installation default. `updated_at IS NULL` is what marks that: once an
-    // administrator has saved a value, a restart must not quietly undo them.
+    // Seed the environment-backed settings, but only while each is still at
+    // its installation default. A null `*_updated_at` is what marks that: once
+    // an administrator has saved a value, a restart must not quietly undo them.
+    // The markers are per setting, so closing sign-ups from the admin area
+    // does not stop FOOD_QUORUM seeding a quorum nobody has touched.
     if let Some(quorum) = config.initial_food_quorum {
         let seeded = sqlx::query(
             "UPDATE instance_settings SET food_quorum = $1
-             WHERE updated_at IS NULL AND food_quorum <> $1",
+             WHERE food_quorum_updated_at IS NULL AND food_quorum <> $1",
         )
         .bind(quorum as i32)
         .execute(&db)
         .await?;
         if seeded.rows_affected() > 0 {
             tracing::info!(quorum, "food quorum seeded from FOOD_QUORUM");
+        }
+    }
+    if let Some(open) = config.initial_allow_registration {
+        let seeded = sqlx::query(
+            "UPDATE instance_settings SET allow_registration = $1
+             WHERE allow_registration_updated_at IS NULL AND allow_registration <> $1",
+        )
+        .bind(open)
+        .execute(&db)
+        .await?;
+        if seeded.rows_affected() > 0 {
+            tracing::info!(open, "registration seeded from ALLOW_REGISTRATION");
         }
     }
 

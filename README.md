@@ -31,7 +31,7 @@ Rust (Axum) API + Postgres + React SPA, all behind one `docker compose up`.
 | **Dark mode** | Follows your OS by default, with a toggle that overrides it. Applied before first paint, so there is no flash of the wrong theme |
 | **Goals & budgets** | Per-nutrient daily targets that point in a direction: a **budget** is a ceiling to stay under, a **goal** is a floor to reach. Covers calories, the three macros, fibre, sugar, saturated fat and sodium |
 | **Accounts** | Email + password sign-up, Argon2id hashing, closable once your accounts exist |
-| **Administration** | The first account owns the instance: promote, suspend and survey accounts, and remove a food outright |
+| **Administration** | The first account owns the instance: promote, suspend and survey accounts, close sign-ups once everyone is in, and remove a food outright |
 | **API keys** | Per-user, scoped read or read-write, revocable, for scripts and dashboards |
 | **Export** | `GET /foods/export` dumps the whole food database keyed by natural identity, ready to commit to a repository |
 | **OpenAPI 3.1** | Generated from the handlers, served at `/api/v1/openapi.json` |
@@ -96,8 +96,9 @@ compose file.
 
 Open <http://localhost:8088> and create your account.
 
-Once your accounts exist, set `ALLOW_REGISTRATION=false` in `.env` and
-`docker compose up -d` again to stop further sign-ups.
+Once your accounts exist, close sign-ups from the admin area (Admin →
+Sign-ups). It takes effect at once, and an empty instance always admits its
+first account, so closing them can never lock you out.
 
 ### Services
 
@@ -151,7 +152,7 @@ Set in `.env` (see `.env.example`).
 | `NOM_INAL_VERSION` | `latest` | Which published image tag to run. |
 | `JWT_TTL_HOURS` | `168` | Session length. |
 | `USDA_API_KEY` | _empty_ | Enables USDA search. |
-| `ALLOW_REGISTRATION` | `true` | Set `false` to close sign-ups. |
+| `ALLOW_REGISTRATION` | `true` | **Seeds** whether sign-ups are open on a fresh install; after an administrator saves the toggle in the admin area, this is ignored. The first account on an empty instance is always allowed. |
 | `MAX_UPLOAD_MB` | `15` | Largest accepted photo, before downscaling. |
 | `FOOD_QUORUM` | `2` | **Seeds** the verification quorum on a fresh install; after an administrator saves one in the admin area, this is ignored. Set to `1` on a single-user instance — a second opinion that can never arrive means nothing is ever verified. |
 | `TRGM_WORD_THRESHOLD` | `0.4` | Fuzzy-search strictness, 0–1. Lower matches more typos and more noise. |
@@ -196,12 +197,21 @@ A re-import from USDA or Open Food Facts refreshes only rows still at revision 1
 deliberately disagreed with upstream, and a refresh must not quietly undo them.
 
 **Policy lives in the database, deployment config lives in the environment.**
-The quorum decides how this community works and is visible to exactly the people
-allowed to change it, so it is a row in `instance_settings` rather than a
-variable that needs shell access and a restart. `FOOD_QUORUM` still seeds a fresh
-install — `updated_at IS NULL` marks an instance nobody has configured yet — and
-stops applying the moment an administrator saves a value, because otherwise every
-restart would silently undo them.
+The quorum decides how this community works, and whether sign-ups are open
+decides who it is for; both are visible to exactly the people allowed to change
+them, so they are columns of the one-row `instance_settings` rather than
+variables that need shell access and a restart. `FOOD_QUORUM` and
+`ALLOW_REGISTRATION` still seed a fresh install and stop applying the moment an
+administrator saves that setting, because otherwise every restart would
+silently undo them. Each seeded setting keeps its own "saved from the admin
+area" marker rather than sharing one for the row: with a shared marker, an
+instance whose administrator had set the quorum would refuse to seed a
+registration setting that arrived in a later upgrade, and a host that closed
+sign-ups in `.env` would find them quietly open again.
+
+Closing sign-ups never applies to an empty instance: the first account is
+always admitted, because an instance nobody can sign in to cannot be reopened
+from inside.
 
 Two columns on `foods`, `verified_at` and `disputed_at`, cache the answer that
 the vote counts imply. They exist so a list — and especially the tiered streaming
@@ -390,6 +400,7 @@ Bruno or Postman for a browsable reference.
 GET    /health
 
 POST   /auth/register            POST   /auth/login             GET  /auth/me
+GET    /auth/registration                # public: are sign-ups open right now
 GET    /profile                  PATCH  /profile
 GET    /search/foods                     # SSE: tiered, fuzzy, streams as it finds
 GET    /targets                  PUT    /targets          # replaces the whole set
@@ -416,6 +427,7 @@ GET    /foods/{id}/verify        POST   /foods/{id}/verify      DELETE /foods/{i
 
 GET    /keys                     POST   /keys                   DELETE /keys/{id}
 GET    /admin/stats              GET    /admin/users            PATCH  /admin/users/{id}
+GET    /admin/settings           PUT    /admin/settings         # quorum, sign-ups
 
 GET    /recipes                  POST   /recipes    # items are a food in grams
                                                      # or a recipe in servings
