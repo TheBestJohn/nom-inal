@@ -1,6 +1,6 @@
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
-use axum::routing::get;
+use axum::routing::{get, put};
 use axum::Router;
 use chrono::{Duration, NaiveDate, Utc};
 use serde::Deserialize;
@@ -10,8 +10,8 @@ use validator::Validate;
 
 use crate::auth::CurrentUser;
 use crate::domain::diary::{
-    CreateDiaryEntryRequest, DailyTotal, DiaryDay, DiaryEntry, DiaryRow, DiarySummary, MealGroup,
-    PatchDiaryEntryRequest,
+    CreateDiaryEntryRequest, DailyTotal, DayCompletion, DiaryDay, DiaryEntry, DiaryRow,
+    DiarySummary, MealGroup, PatchDiaryEntryRequest, SetDayCompleteRequest,
 };
 use crate::domain::nutrients::Nutrients;
 use crate::domain::target::TargetProgress;
@@ -23,6 +23,7 @@ pub fn router() -> Router<AppState> {
     Router::new()
         .route("/", get(list).post(create))
         .route("/day", get(day))
+        .route("/day/{date}/complete", put(set_complete))
         .route("/summary", get(summary))
         .route("/{id}", get(get_one).patch(patch).delete(delete))
 }
@@ -65,6 +66,50 @@ const ENTRY_SELECT: &str = r#"
         FROM recipe_totals(d.recipe_id) t
     ) rt ON d.recipe_id IS NOT NULL
 "#;
+
+/// Per-day totals for one account over a range: `$1` user, `$2` from, `$3`
+/// to. One row per day that has entries, scaled and summed in SQL so a year
+/// of history is a single round trip.
+///
+/// The summary reads this, and so does the adaptive expenditure estimate.
+/// It is one query rather than two because the estimate's whole claim is
+/// "your intake on these days was X" — X has to be the figure the summary
+/// shows for those days, or the estimate is explaining a number nobody can
+/// find.
+pub(crate) fn day_totals_sql() -> String {
+    format!(
+        r#"
+        WITH entries AS (
+            {ENTRY_SELECT}
+            WHERE d.user_id = $1 AND d.logged_on BETWEEN $2 AND $3
+        ), scaled AS (
+            SELECT logged_on,
+                   COALESCE(quantity_g / 100.0, recipe_servings, 0) AS factor,
+                   COALESCE(calories_kcal, 0)   AS calories_kcal,
+                   COALESCE(protein_g, 0)       AS protein_g,
+                   COALESCE(carbs_g, 0)         AS carbs_g,
+                   COALESCE(fat_g, 0)           AS fat_g,
+                   COALESCE(fiber_g, 0)         AS fiber_g,
+                   COALESCE(sugar_g, 0)         AS sugar_g,
+                   COALESCE(saturated_fat_g, 0) AS saturated_fat_g,
+                   COALESCE(sodium_mg, 0)       AS sodium_mg
+            FROM entries
+        )
+        SELECT logged_on,
+               count(*)                          AS entry_count,
+               sum(calories_kcal   * factor)     AS calories_kcal,
+               sum(protein_g       * factor)     AS protein_g,
+               sum(carbs_g         * factor)     AS carbs_g,
+               sum(fat_g           * factor)     AS fat_g,
+               sum(fiber_g         * factor)     AS fiber_g,
+               sum(sugar_g         * factor)     AS sugar_g,
+               sum(saturated_fat_g * factor)     AS saturated_fat_g,
+               sum(sodium_mg       * factor)     AS sodium_mg
+        FROM scaled
+        GROUP BY logged_on
+        "#
+    )
+}
 
 #[derive(Debug, Default, Deserialize, IntoParams)]
 #[serde(default)]
@@ -177,13 +222,68 @@ pub async fn day(
         .map(|t| TargetProgress::evaluate(t.nutrient, t.amount, t.kind, &total))
         .collect();
 
+    // No row is the same as a row saying false: the flag defaults to "not
+    // said", and a day nobody has vouched for is not complete.
+    let complete: Option<(bool,)> =
+        sqlx::query_as("SELECT complete FROM diary_days WHERE user_id = $1 AND day = $2")
+            .bind(user.id)
+            .bind(date)
+            .fetch_optional(&state.db)
+            .await?;
+
     Ok(Json(DiaryDay {
         date,
         meals,
         energy_share: total.energy_share(),
         total,
         targets,
+        complete: complete.is_some_and(|c| c.0),
     }))
+}
+
+#[utoipa::path(
+    put, path = "/api/v1/diary/day/{date}/complete", tag = "diary",
+    security(("bearer" = [])),
+    params(("date" = NaiveDate, Path, description = "The day, YYYY-MM-DD")),
+    request_body = SetDayCompleteRequest,
+    responses(
+        (status = 200, description = "The flag as stored", body = DayCompletion),
+        (status = 400, body = crate::error::ErrorBody),
+    )
+)]
+pub async fn set_complete(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    Path(date): Path<NaiveDate>,
+    Json(body): Json<SetDayCompleteRequest>,
+) -> ApiResult<Json<DayCompletion>> {
+    // A day that has not happened cannot have been fully logged. One day of
+    // grace past UTC today, because "today" for someone east of Greenwich is
+    // tomorrow here for part of every evening.
+    if date > Utc::now().date_naive() + Duration::days(1) {
+        return Err(ApiError::bad_request(
+            "a day in the future cannot be marked as logged",
+        ));
+    }
+
+    // Upsert: the flag is a fact about the day, and saying it twice is not
+    // a conflict. A day with no entries can be complete — a fast day is one
+    // of the more informative days an estimate can be given.
+    let row: DayCompletion = sqlx::query_as(
+        "INSERT INTO diary_days (user_id, day, complete)
+         VALUES ($1, $2, $3)
+         ON CONFLICT (user_id, day) DO UPDATE SET
+            complete = EXCLUDED.complete,
+            updated_at = now()
+         RETURNING day AS date, complete, updated_at",
+    )
+    .bind(user.id)
+    .bind(date)
+    .bind(body.complete)
+    .fetch_one(&state.db)
+    .await?;
+
+    Ok(Json(row))
 }
 
 #[utoipa::path(
@@ -203,8 +303,6 @@ pub async fn summary(
         return Err(ApiError::bad_request("from must not be after to"));
     }
 
-    // Roll the per-entry scaling and the per-day sum into one query so a year
-    // of history is a single round trip.
     #[derive(sqlx::FromRow)]
     struct Row {
         logged_on: NaiveDate,
@@ -217,40 +315,38 @@ pub async fn summary(
         sugar_g: f64,
         saturated_fat_g: f64,
         sodium_mg: f64,
+        complete: bool,
     }
 
+    // The per-day totals, joined to the days the account has vouched for. A
+    // day marked complete with nothing logged is listed with zero entries:
+    // it is a fast day, which is data, and dropping it would be the one way
+    // to make the flag invisible. A day marked and then unmarked, with
+    // nothing logged, is just an absence and stays out.
     let rows: Vec<Row> = sqlx::query_as(&format!(
         r#"
-        WITH entries AS (
-            {ENTRY_SELECT}
-            WHERE d.user_id = $1 AND d.logged_on BETWEEN $2 AND $3
-        ), scaled AS (
-            SELECT logged_on,
-                   COALESCE(quantity_g / 100.0, recipe_servings, 0) AS factor,
-                   COALESCE(calories_kcal, 0)   AS calories_kcal,
-                   COALESCE(protein_g, 0)       AS protein_g,
-                   COALESCE(carbs_g, 0)         AS carbs_g,
-                   COALESCE(fat_g, 0)           AS fat_g,
-                   COALESCE(fiber_g, 0)         AS fiber_g,
-                   COALESCE(sugar_g, 0)         AS sugar_g,
-                   COALESCE(saturated_fat_g, 0) AS saturated_fat_g,
-                   COALESCE(sodium_mg, 0)       AS sodium_mg
-            FROM entries
-        )
-        SELECT logged_on,
-               count(*)                          AS entry_count,
-               sum(calories_kcal   * factor)     AS calories_kcal,
-               sum(protein_g       * factor)     AS protein_g,
-               sum(carbs_g         * factor)     AS carbs_g,
-               sum(fat_g           * factor)     AS fat_g,
-               sum(fiber_g         * factor)     AS fiber_g,
-               sum(sugar_g         * factor)     AS sugar_g,
-               sum(saturated_fat_g * factor)     AS saturated_fat_g,
-               sum(sodium_mg       * factor)     AS sodium_mg
-        FROM scaled
-        GROUP BY logged_on
-        ORDER BY logged_on ASC
-        "#
+        WITH totals AS ({totals}),
+             marked AS (
+                 SELECT day, complete FROM diary_days
+                 WHERE user_id = $1 AND day BETWEEN $2 AND $3
+             )
+        SELECT COALESCE(t.logged_on, m.day)      AS logged_on,
+               COALESCE(t.entry_count, 0)        AS entry_count,
+               COALESCE(t.calories_kcal, 0)      AS calories_kcal,
+               COALESCE(t.protein_g, 0)          AS protein_g,
+               COALESCE(t.carbs_g, 0)            AS carbs_g,
+               COALESCE(t.fat_g, 0)              AS fat_g,
+               COALESCE(t.fiber_g, 0)            AS fiber_g,
+               COALESCE(t.sugar_g, 0)            AS sugar_g,
+               COALESCE(t.saturated_fat_g, 0)    AS saturated_fat_g,
+               COALESCE(t.sodium_mg, 0)          AS sodium_mg,
+               COALESCE(m.complete, false)       AS complete
+        FROM totals t
+        FULL OUTER JOIN marked m ON m.day = t.logged_on
+        WHERE t.logged_on IS NOT NULL OR m.complete
+        ORDER BY 1 ASC
+        "#,
+        totals = day_totals_sql()
     ))
     .bind(user.id)
     .bind(from)
@@ -274,16 +370,22 @@ pub async fn summary(
                 sodium_mg: r.sodium_mg,
             }
             .rounded(),
+            complete: r.complete,
         })
         .collect();
 
-    let logged_day_count = days.len() as i64;
+    let logged: Vec<&DailyTotal> = days.iter().filter(|d| d.entry_count > 0).collect();
+    let logged_day_count = logged.len() as i64;
+    let complete_day_count = days.iter().filter(|d| d.complete).count() as i64;
     // Average over logged days only: days with nothing recorded are missing
-    // data, not zero-calorie days, and averaging them in would mislead.
+    // data, not zero-calorie days, and averaging them in would mislead. A
+    // complete fast day is the one honest zero, and the adaptive estimate is
+    // where it counts; this average keeps its long-standing meaning.
     let average = if logged_day_count == 0 {
         Nutrients::default()
     } else {
-        days.iter()
+        logged
+            .iter()
             .map(|d| d.total)
             .sum::<Nutrients>()
             .scaled(1.0 / logged_day_count as f64)
@@ -297,6 +399,7 @@ pub async fn summary(
         energy_share: average.energy_share(),
         average,
         logged_day_count,
+        complete_day_count,
     }))
 }
 

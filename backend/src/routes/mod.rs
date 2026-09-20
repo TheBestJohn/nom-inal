@@ -1,6 +1,7 @@
 pub mod admin;
 pub mod auth;
 pub mod diary;
+pub mod estimates;
 pub mod foods;
 pub mod keys;
 pub mod photos;
@@ -82,4 +83,5 @@ pub fn api_router() -> Router<AppState> {
         .nest("/targets", targets::router())
         .nest("/search", search::router())
         .nest("/diary", diary::router())
+        .nest("/estimates", estimates::router())
 }

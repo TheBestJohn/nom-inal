@@ -88,6 +88,23 @@ percentage. `weights_stats` reports the change over the window and a 7-entry
 moving average; the average is what to quote as the trend, since single
 weigh-ins swing with water.
 
+## "I logged everything", and the estimators
+
+A day can be marked **complete** (`diary_set_complete` with
+`{ "complete": true }`): the person is saying every meal is in. A complete
+day with no entries is a fast day, a real zero. Only complete days feed
+`estimates_tdee`, which measures expenditure by energy balance — mean intake
+on complete days, less what the weight trend stored at 7700 kcal/kg — and
+shows the profile formula beside it. When the person confirms a whole day is
+logged, mark it; never mark a day on their behalf.
+
+`estimates_tdee` and `estimates_projection` return `ready: false` with a
+`reason` and `have`/`need` counts until there are enough complete days and
+weigh-ins. Report the shortfall rather than guessing a number. A projection
+carries `caution: true` when a rate is past about 1 % of body weight a week;
+say so when quoting it. None of this is advice: it is arithmetic on the
+person's own records.
+
 ## Search
 
 `search_stream_foods` returns the tiers the search found in order —

@@ -154,13 +154,32 @@ pub struct DiaryDay {
     /// Where the day stands against each target the user has set, in display
     /// order. Empty when no targets are set.
     pub targets: Vec<TargetProgress>,
+    /// "I logged everything": the owner has said every meal is in. Only
+    /// complete days feed the adaptive expenditure estimate.
+    pub complete: bool,
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct SetDayCompleteRequest {
+    pub complete: bool,
+}
+
+/// The flag as stored, after `PUT /diary/day/{date}/complete`.
+#[derive(Debug, Serialize, FromRow, ToSchema)]
+pub struct DayCompletion {
+    pub date: NaiveDate,
+    pub complete: bool,
+    pub updated_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
 pub struct DailyTotal {
     pub date: NaiveDate,
     pub total: Nutrients,
+    /// Zero for a day marked complete with nothing logged: a fast day, which
+    /// is listed because it is data, not an absence.
     pub entry_count: i64,
+    pub complete: bool,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -172,5 +191,8 @@ pub struct DiarySummary {
     pub average: Nutrients,
     /// Share of the average day's energy from protein, carbohydrate and fat.
     pub energy_share: EnergyShare,
+    /// Days with at least one entry. The average is over these.
     pub logged_day_count: i64,
+    /// Days marked "I logged everything", with or without entries.
+    pub complete_day_count: i64,
 }

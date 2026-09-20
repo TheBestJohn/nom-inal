@@ -384,7 +384,7 @@ pub struct FocusPreview {
 /// Round to the precision a suggested target should read at: kcal to the
 /// nearest ten, everything else to whole units. A budget of 2187 kcal claims
 /// a precision the estimate does not have.
-fn round_for(nutrient: Nutrient, v: f64) -> f64 {
+pub(crate) fn round_for(nutrient: Nutrient, v: f64) -> f64 {
     match nutrient {
         Nutrient::CaloriesKcal => (v / 10.0).round() * 10.0,
         _ => v.round(),
