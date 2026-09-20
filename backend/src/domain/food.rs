@@ -45,6 +45,26 @@ pub(crate) use food_columns;
 /// The list for any statement that reads `foods` under its own name.
 pub const FOOD_COLUMNS: &str = food_columns!("foods");
 
+/// A food's natural identity as a SQL expression over a `foods` row aliased
+/// `f`: its name and brand, lowercased and trimmed, joined by a pipe.
+///
+/// This is how a food is named wherever internal ids cannot travel — the
+/// seed-repository export, a recipe export, an account export — and how an
+/// import finds it again on another instance. One definition, so a key
+/// written by the food export always matches one computed by the account
+/// import reading it back.
+pub const FOOD_KEY_SQL: &str = "lower(btrim(f.name)) || '|' || lower(btrim(coalesce(f.brand, '')))";
+
+/// The same identity computed in Rust, for a food that is only in memory.
+/// Must agree with `FOOD_KEY_SQL` to the character.
+pub fn food_key(name: &str, brand: Option<&str>) -> String {
+    format!(
+        "{}|{}",
+        name.trim().to_lowercase(),
+        brand.unwrap_or_default().trim().to_lowercase()
+    )
+}
+
 /// A food as stored: all nutrient figures are **per 100 g**.
 #[derive(Debug, Clone, Serialize, FromRow, ToSchema)]
 pub struct Food {
