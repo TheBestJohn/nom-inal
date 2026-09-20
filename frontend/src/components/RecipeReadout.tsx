@@ -138,24 +138,34 @@ export default function RecipeReadout({
           ) : (
             <ul className="divide-y">
               {recipe.items.map((item) => (
-                <li key={item.id} className="flex items-baseline gap-3 py-2">
-                  {/* Amount first, as on a recipe card, and in a fixed column
-                      so the names line up under each other. */}
-                  <span className="text-muted-foreground tabular w-24 shrink-0 text-right text-sm">
+                // Amount then ingredient, because that is the order a cook
+                // reads a line in. On a phone the two share the first line
+                // and the energy drops underneath; from `sm` there is room
+                // for all three abreast, with the amounts in a fixed column
+                // so the names line up under each other.
+                <li
+                  key={item.id}
+                  className="grid grid-cols-[auto_1fr] items-baseline gap-x-3 gap-y-0.5 py-2.5 sm:grid-cols-[6rem_1fr_auto]"
+                >
+                  <span className="text-muted-foreground tabular min-w-14 text-sm whitespace-nowrap sm:min-w-0 sm:text-right">
                     {item.label
                       ? ''
                       : item.sub_recipe_id
                         ? `${round(item.servings ?? 0, 2)} serving${item.servings === 1 ? '' : 's'}`
                         : grams(item.quantity_g, 0)}
                   </span>
-                  <span className="min-w-0 flex-1">
+                  <span className="min-w-0" data-ingredient-name>
                     {item.sub_recipe_id && subRecipeHref ? (
+                      // Inline rather than a flex row: the name is allowed to
+                      // wrap on a narrow screen, and a flex row put the icon
+                      // at the far right of the card instead of after the
+                      // last word of the name it belongs to.
                       <Link
                         to={subRecipeHref(item.sub_recipe_id)}
-                        className="hover:text-primary inline-flex items-center gap-1.5 font-medium underline-offset-4 hover:underline"
+                        className="hover:text-primary font-medium underline-offset-4 hover:underline"
                       >
                         {item.name}
-                        <ExternalLink className="size-3.5 shrink-0 print:hidden" />
+                        <ExternalLink className="ml-1 inline size-3.5 align-[-0.15em] print:hidden" />
                       </Link>
                     ) : (
                       <span className="font-medium">{item.name}</span>
@@ -173,7 +183,7 @@ export default function RecipeReadout({
                       </span>
                     )}
                   </span>
-                  <span className="text-muted-foreground tabular shrink-0 text-xs">
+                  <span className="text-muted-foreground tabular col-start-2 text-xs sm:col-start-3 sm:row-start-1">
                     {item.label ? 'not counted' : kcal(item.nutrients.calories_kcal)}
                   </span>
                 </li>

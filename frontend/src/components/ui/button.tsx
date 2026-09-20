@@ -18,12 +18,19 @@ const buttonVariants = cva(
         ghost: 'hover:bg-accent hover:text-accent-foreground dark:hover:bg-accent/50',
         link: 'text-primary underline-offset-4 hover:underline',
       },
+      // Every size grows to the 44px a thumb needs where the pointer is
+      // coarse, and stays exactly as it was where it is not. A phone-sized
+      // browser window on a desktop is still a mouse; a laptop with a
+      // touchscreen is not, and this reads the pointer rather than the width
+      // because that is the thing that actually decides how hard a control is
+      // to hit. Sized here rather than at each call site so a new button is
+      // tappable by default instead of by whoever remembered.
       size: {
-        default: 'h-9 px-4 py-2 has-[>svg]:px-3',
-        sm: 'h-8 rounded-md gap-1.5 px-3 has-[>svg]:px-2.5',
-        lg: 'h-10 rounded-md px-6 has-[>svg]:px-4',
-        icon: 'size-9',
-        'icon-sm': 'size-7 rounded-md',
+        default: 'h-9 px-4 py-2 has-[>svg]:px-3 pointer-coarse:h-11',
+        sm: 'h-8 rounded-md gap-1.5 px-3 has-[>svg]:px-2.5 pointer-coarse:h-11',
+        lg: 'h-10 rounded-md px-6 has-[>svg]:px-4 pointer-coarse:h-11',
+        icon: 'size-9 pointer-coarse:size-11',
+        'icon-sm': 'size-7 rounded-md pointer-coarse:size-11',
       },
     },
     defaultVariants: { variant: 'default', size: 'default' },

@@ -40,7 +40,19 @@ function DialogContent({
           // `bg-popover` rather than shadcn's default `bg-background`: in dark
           // mode the page and the dialog would otherwise be the same colour,
           // leaving a thin border and a black scrim as the only separation.
-          'bg-popover data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 fixed top-[50%] left-[50%] z-50 grid w-full max-w-[calc(100%-2rem)] translate-x-[-50%] translate-y-[-50%] gap-4 rounded-lg border p-6 shadow-lg duration-200 sm:max-w-lg',
+          // `p-4` below `sm`: six rems of padding out of a 360px screen is a
+          // fifth of the dialog spent on air, and the pickers inside are
+          // rows of text that need every pixel. It also never grows past the
+          // viewport, so a tall picker scrolls inside the dialog rather than
+          // hanging off the top and bottom of the screen.
+          // `grid-cols-1` is load-bearing: a grid with no template gets one
+          // implicit `auto` track, which sizes to its widest content and
+          // overflows the dialog rather than the other way round. That is
+          // what pushed the picker's third tab and every food row off the
+          // right-hand edge on a phone. `grid-cols-1` is `minmax(0, 1fr)`,
+          // so the column is the dialog's width and the rows truncate as
+          // they were written to.
+          'bg-popover data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 fixed top-[50%] left-[50%] z-50 grid max-h-[calc(100dvh-2rem)] w-full max-w-[calc(100%-2rem)] translate-x-[-50%] translate-y-[-50%] grid-cols-1 gap-4 overflow-y-auto rounded-lg border p-4 shadow-lg duration-200 sm:max-w-lg sm:p-6',
           className,
         )}
         {...props}
@@ -64,7 +76,11 @@ function DialogHeader({ className, ...props }: React.ComponentProps<'div'>) {
   return (
     <div
       data-slot="dialog-header"
-      className={cn('flex flex-col gap-2 text-center sm:text-left', className)}
+      // Left-aligned at every width, with room kept for the close button:
+      // centred, a long title on a phone ran straight under the X in the
+      // corner, and a heading that starts where its body starts is easier to
+      // find anyway.
+      className={cn('flex flex-col gap-2 pr-7 text-left', className)}
       {...props}
     />
   )

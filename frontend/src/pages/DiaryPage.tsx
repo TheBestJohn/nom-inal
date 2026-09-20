@@ -241,9 +241,13 @@ export default function DiaryPage() {
                       </p>
                     </div>
                     <MacroRow n={entry.nutrients} compact />
+                    {/* Pushed to the end of whatever line it lands on: when
+                        the row wraps on a phone the remove button was ending
+                        up alone under the left edge, next to nothing. */}
                     <Button
                       variant="ghost"
                       size="icon-sm"
+                      className="ml-auto"
                       aria-label={`Remove ${entry.name}`}
                       onClick={() => remove.mutate(entry.id)}
                     >
@@ -261,8 +265,11 @@ export default function DiaryPage() {
             {group.total && (group.entries.length > 1 || user?.tracking_focus === 'diabetes') && (
               <>
                 <Separator className="my-2" />
-                <div className="flex items-center justify-between gap-3">
-                  <span className="text-muted-foreground text-xs">Meal total</span>
+                <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
+                  {/* Nine nutrients leave nothing for a two-word label, which
+                      then broke across two lines. It keeps its line and the
+                      figures take the next one. */}
+                  <span className="text-muted-foreground shrink-0 text-xs">Meal total</span>
                   <MacroRow n={group.total} compact />
                 </div>
               </>

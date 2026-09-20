@@ -4,7 +4,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Globe, Lock, Plus, X } from 'lucide-react'
 
 import { api } from '@/api/endpoints'
-import { grams, kcal } from '@/lib/format'
+import { grams } from '@/lib/format'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import {
@@ -77,21 +77,27 @@ export default function RecipesPage() {
         {recipes.data?.map((recipe) => (
           <Card key={recipe.id}>
             <CardHeader>
-              <CardTitle className="flex items-center gap-2">
+              {/* The badge used to sit beside the name and take a bite out of
+                  it; a long name then wrapped to four lines against a
+                  40-pixel column. The name gets the width, and "Shared" goes
+                  with the rest of what the recipe is. */}
+              <CardTitle>
                 <Link to={`/recipes/${recipe.id}`} className="hover:underline">
                   {recipe.name}
                 </Link>
+              </CardTitle>
+              <CardDescription className="flex flex-wrap items-center gap-x-1.5 gap-y-1">
                 {recipe.is_public && (
                   <Badge variant="success" className="gap-1">
                     <Globe className="size-3" /> Shared
                   </Badge>
                 )}
-              </CardTitle>
-              <CardDescription>
-                {recipe.author ? `by ${recipe.author} · ` : ''}
-                {recipe.item_count} ingredient{recipe.item_count === 1 ? '' : 's'} ·{' '}
-                {grams(recipe.total_weight_g, 0)} · {recipe.servings} serving
-                {recipe.servings === 1 ? '' : 's'}
+                <span>
+                  {recipe.author ? `by ${recipe.author} · ` : ''}
+                  {recipe.item_count} ingredient{recipe.item_count === 1 ? '' : 's'} ·{' '}
+                  {grams(recipe.total_weight_g, 0)} · {recipe.servings} serving
+                  {recipe.servings === 1 ? '' : 's'}
+                </span>
               </CardDescription>
               {recipe.is_owner && (
                 <CardAction>
@@ -106,15 +112,26 @@ export default function RecipesPage() {
                 </CardAction>
               )}
             </CardHeader>
-            <CardContent className="flex gap-4">
-              {recipe.cover_photo_url && <Cover url={recipe.cover_photo_url} name={recipe.name} />}
-              <div className="min-w-0 flex-1 space-y-1">
-                {recipe.description && (
-                  <p className="text-muted-foreground line-clamp-2 text-sm">{recipe.description}</p>
+            {/* The macro row sits under the photo rather than beside it.
+                With every nutrient switched on it is nine figures, and in the
+                column left over by an 80-pixel thumbnail that was five lines
+                of two words. The kcal figure is not repeated above it
+                either — the row already opens with it. */}
+            <CardContent className="space-y-2">
+              <div className="flex gap-4">
+                {recipe.cover_photo_url && (
+                  <Cover url={recipe.cover_photo_url} name={recipe.name} />
                 )}
-                <p className="text-muted-foreground text-xs">
-                  Per serving · {kcal(recipe.per_serving.calories_kcal)}
-                </p>
+                <div className="min-w-0 flex-1">
+                  {recipe.description && (
+                    <p className="text-muted-foreground line-clamp-3 text-sm">
+                      {recipe.description}
+                    </p>
+                  )}
+                </div>
+              </div>
+              <div className="space-y-1">
+                <p className="text-muted-foreground text-xs">Per serving</p>
                 <MacroRow n={recipe.per_serving} />
               </div>
             </CardContent>
@@ -132,7 +149,7 @@ export default function RecipesPage() {
 function Cover({ url, name }: { url: string; name: string }) {
   const { objectUrl } = useAuthedImage(url)
   return (
-    <div className="bg-muted size-20 shrink-0 overflow-hidden rounded-md border">
+    <div className="bg-muted size-24 shrink-0 overflow-hidden rounded-md border sm:size-20">
       {objectUrl && (
         <img src={objectUrl} alt={`Photo of ${name}`} className="size-full object-cover" />
       )}
