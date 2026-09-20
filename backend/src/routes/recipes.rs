@@ -1,28 +1,41 @@
+use std::future::Future;
+use std::pin::Pin;
+
 use axum::extract::{Path, Query, State};
-use axum::http::StatusCode;
+use axum::http::{header, StatusCode};
+use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::Router;
+use chrono::Utc;
 use serde::Deserialize;
+use sqlx::{Postgres, Transaction};
 use utoipa::IntoParams;
 use uuid::Uuid;
 use validator::Validate;
 
 use crate::auth::CurrentUser;
+use crate::domain::food::food_key;
+use crate::domain::ingredient::parse_ingredient;
+use crate::domain::jsonld;
 use crate::domain::nutrients::Nutrients;
 use crate::domain::photo::photo_url;
 use crate::domain::recipe::{
-    FromMealRequest, Recipe, RecipeItem, RecipeItemInput, RecipeItemRow, RecipeRow, RecipeSummary,
-    UpsertRecipeRequest,
+    DraftCandidate, DraftLine, FoodRef, FromMealRequest, ImportRecipeRequest, Recipe, RecipeDraft,
+    RecipeExport, RecipeExportBundle, RecipeExportItem, RecipeItem, RecipeItemInput, RecipeItemRow,
+    RecipeRow, RecipeSummary, UpsertRecipeRequest,
 };
 use crate::error::{ApiError, ApiResult};
 use crate::extract::Json;
+use crate::services::fetch::fetch_public_page;
 use crate::state::AppState;
 
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/", get(list).post(create))
+        .route("/import", post(import_from_url))
         .route("/from-meal", post(from_meal))
         .route("/{id}", get(get_one).put(update).delete(delete))
+        .route("/{id}/export", get(export))
 }
 
 const RECIPE_COLUMNS: &str =
@@ -174,7 +187,7 @@ pub async fn get_one(
     user: CurrentUser,
     Path(id): Path<Uuid>,
 ) -> ApiResult<Json<Recipe>> {
-    Ok(Json(load_recipe(&state, user.id, id).await?))
+    Ok(Json(load_recipe(&state, Some(user.id), id).await?))
 }
 
 #[utoipa::path(
@@ -189,22 +202,25 @@ pub async fn create(
     Json(body): Json<UpsertRecipeRequest>,
 ) -> ApiResult<(StatusCode, Json<Recipe>)> {
     body.validate()?;
-    let id = insert_recipe(&state, user.id, &body).await?;
-    let full = load_recipe(&state, user.id, id).await?;
-    Ok((StatusCode::CREATED, Json(full)))
-}
-
-/// Write a new recipe and its ingredients. The one insert path: creating a
-/// recipe from a form and from a logged meal both come through here.
-async fn insert_recipe(
-    state: &AppState,
-    user_id: Uuid,
-    body: &UpsertRecipeRequest,
-) -> ApiResult<Uuid> {
     // Header and ingredients are written in one transaction: a recipe that
     // exists with half its ingredients would silently misreport its macros.
     let mut tx = state.db.begin().await?;
+    let id = insert_recipe(&mut tx, user.id, &body).await?;
+    tx.commit().await?;
 
+    let full = load_recipe(&state, Some(user.id), id).await?;
+    Ok((StatusCode::CREATED, Json(full)))
+}
+
+/// Write a new recipe, header and ingredients, inside the caller's
+/// transaction. The one insert path: a recipe typed into the form, one built
+/// from a logged meal and one restored by the account import all come
+/// through here, so each goes through exactly the same checks.
+pub async fn insert_recipe(
+    tx: &mut Transaction<'_, Postgres>,
+    user_id: Uuid,
+    body: &UpsertRecipeRequest,
+) -> ApiResult<Uuid> {
     let recipe: RecipeRow = sqlx::query_as(&format!(
         "INSERT INTO recipes (user_id, name, description, instructions, servings, is_public)
          VALUES ($1, $2, $3, $4, $5, $6)
@@ -216,12 +232,50 @@ async fn insert_recipe(
     .bind(body.instructions.as_deref())
     .bind(body.servings)
     .bind(body.is_public)
-    .fetch_one(&mut *tx)
+    .fetch_one(&mut **tx)
     .await?;
 
-    insert_items(&mut tx, recipe.id, user_id, body).await?;
-    tx.commit().await?;
+    insert_items(tx, recipe.id, user_id, body).await?;
     Ok(recipe.id)
+}
+
+/// Replace an existing recipe of `user_id`'s, header and ingredients, inside
+/// the caller's transaction. False when there is no such recipe of theirs.
+pub async fn replace_recipe(
+    tx: &mut Transaction<'_, Postgres>,
+    user_id: Uuid,
+    id: Uuid,
+    body: &UpsertRecipeRequest,
+) -> ApiResult<bool> {
+    let updated: Option<RecipeRow> = sqlx::query_as(&format!(
+        "UPDATE recipes SET name = $3, description = $4, instructions = $5, servings = $6,
+                            is_public = $7, updated_at = now()
+         WHERE id = $1 AND user_id = $2
+         RETURNING {RECIPE_COLUMNS}"
+    ))
+    .bind(id)
+    .bind(user_id)
+    .bind(body.name.trim())
+    .bind(body.description.as_deref())
+    .bind(body.instructions.as_deref())
+    .bind(body.servings)
+    .bind(body.is_public)
+    .fetch_optional(&mut **tx)
+    .await?;
+
+    if updated.is_none() {
+        return Ok(false);
+    }
+
+    // Ingredient list is replaced wholesale — simpler and less error-prone than
+    // diffing, and the list is small enough that the rewrite cost is irrelevant.
+    sqlx::query("DELETE FROM recipe_items WHERE recipe_id = $1")
+        .bind(id)
+        .execute(&mut **tx)
+        .await?;
+
+    insert_items(tx, id, user_id, body).await?;
+    Ok(true)
 }
 
 #[utoipa::path(
@@ -297,8 +351,10 @@ pub async fn from_meal(
     };
     request.validate()?;
 
-    let id = insert_recipe(&state, user.id, &request).await?;
-    let full = load_recipe(&state, user.id, id).await?;
+    let mut tx = state.db.begin().await?;
+    let id = insert_recipe(&mut tx, user.id, &request).await?;
+    tx.commit().await?;
+    let full = load_recipe(&state, Some(user.id), id).await?;
     Ok((StatusCode::CREATED, Json(full)))
 }
 
@@ -318,38 +374,12 @@ pub async fn update(
     body.validate()?;
 
     let mut tx = state.db.begin().await?;
-
-    let updated: Option<RecipeRow> = sqlx::query_as(&format!(
-        "UPDATE recipes SET name = $3, description = $4, instructions = $5, servings = $6,
-                            is_public = $7, updated_at = now()
-         WHERE id = $1 AND user_id = $2
-         RETURNING {RECIPE_COLUMNS}"
-    ))
-    .bind(id)
-    .bind(user.id)
-    .bind(body.name.trim())
-    .bind(body.description.as_deref())
-    .bind(body.instructions.as_deref())
-    .bind(body.servings)
-    .bind(body.is_public)
-    .fetch_optional(&mut *tx)
-    .await?;
-
-    if updated.is_none() {
+    if !replace_recipe(&mut tx, user.id, id, &body).await? {
         return Err(ApiError::NotFound("recipe"));
     }
-
-    // Ingredient list is replaced wholesale — simpler and less error-prone than
-    // diffing, and the list is small enough that the rewrite cost is irrelevant.
-    sqlx::query("DELETE FROM recipe_items WHERE recipe_id = $1")
-        .bind(id)
-        .execute(&mut *tx)
-        .await?;
-
-    insert_items(&mut tx, id, user.id, &body).await?;
     tx.commit().await?;
 
-    Ok(Json(load_recipe(&state, user.id, id).await?))
+    Ok(Json(load_recipe(&state, Some(user.id), id).await?))
 }
 
 #[utoipa::path(
@@ -507,9 +537,17 @@ fn graph_error(e: sqlx::Error) -> ApiError {
     }
 }
 
-pub async fn load_recipe(state: &AppState, user_id: Uuid, id: Uuid) -> ApiResult<Recipe> {
-    // Visible when you own it or its author shared it. Editing stays owner-only
-    // and is checked separately by the handlers that write.
+/// Assemble a recipe for `viewer`: its items with their contributions, the
+/// totals, and who wrote it.
+///
+/// Visible when you own it or its author shared it. `viewer` is `None` for a
+/// reader who has not signed in — the public recipe page — and then only a
+/// shared recipe is found, by the same WHERE clause: `r.user_id = NULL` is
+/// unknown, so `is_public` alone decides. One assembly path for both, so the
+/// public page can never show a different recipe from the signed-in one.
+/// Editing stays owner-only and is checked separately by the handlers that
+/// write.
+pub async fn load_recipe(state: &AppState, viewer: Option<Uuid>, id: Uuid) -> ApiResult<Recipe> {
     // The author's name is only needed here, so it rides along on a local row
     // type rather than widening RecipeRow, which the write paths also use and
     // which never joins `users`.
@@ -534,7 +572,7 @@ pub async fn load_recipe(state: &AppState, user_id: Uuid, id: Uuid) -> ApiResult
          WHERE r.id = $1 AND (r.user_id = $2 OR r.is_public)",
     )
     .bind(id)
-    .bind(user_id)
+    .bind(viewer)
     .fetch_optional(&state.db)
     .await?
     .ok_or(ApiError::NotFound("recipe"))?;
@@ -550,6 +588,7 @@ pub async fn load_recipe(state: &AppState, user_id: Uuid, id: Uuid) -> ApiResult
                ri.note, ri.sort_order,
                COALESCE(f.name, sub.name, ri.label) AS name,
                f.brand AS brand,
+               f.variant_label AS variant_label,
                COALESCE(f.calories_kcal * ri.quantity_g / 100.0,
                         rt.calories_kcal * ri.servings / sub.servings, 0) AS calories_kcal,
                COALESCE(f.protein_g * ri.quantity_g / 100.0,
@@ -599,6 +638,7 @@ pub async fn load_recipe(state: &AppState, user_id: Uuid, id: Uuid) -> ApiResult
             label: r.label,
             name: r.name,
             brand: r.brand,
+            variant_label: r.variant_label,
             quantity_g: r.quantity_g,
             servings: r.servings,
             weight_g: round2(r.weight_g),
@@ -607,7 +647,7 @@ pub async fn load_recipe(state: &AppState, user_id: Uuid, id: Uuid) -> ApiResult
         })
         .collect();
 
-    let is_owner = recipe.user_id == user_id;
+    let is_owner = viewer == Some(recipe.user_id);
 
     Ok(Recipe {
         id: recipe.id,
@@ -661,4 +701,223 @@ impl TotalsRow {
 
 fn round2(v: f64) -> f64 {
     (v * 100.0).round() / 100.0
+}
+
+// ---------------------------------------------------------------------------
+// Export
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Default, Deserialize, IntoParams)]
+#[serde(default)]
+pub struct ExportQuery {
+    /// `json` (default): the seed-repository shape, no internal ids, foods by
+    /// natural key, sub-recipes inlined. `markdown`: a recipe card.
+    pub format: Option<String>,
+}
+
+#[utoipa::path(
+    get, path = "/api/v1/recipes/{id}/export", tag = "recipes",
+    security(("bearer" = [])),
+    params(("id" = Uuid, Path, description = "Recipe id"), ExportQuery),
+    responses(
+        (status = 200, description = "The recipe as a portable document: JSON by default, or Markdown with `format=markdown`",
+         content((RecipeExportBundle = "application/json"), (String = "text/markdown"))),
+        (status = 400, description = "Unknown format", body = crate::error::ErrorBody),
+        (status = 404, body = crate::error::ErrorBody),
+    )
+)]
+pub async fn export(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    Path(id): Path<Uuid>,
+    Query(q): Query<ExportQuery>,
+) -> ApiResult<Response> {
+    // Your own or a shared one: the same rule as reading it.
+    let recipe = load_recipe(&state, Some(user.id), id).await?;
+    let export = export_recipe(&state, Some(user.id), &recipe).await?;
+
+    match q.format.as_deref().map(str::trim).unwrap_or("json") {
+        "json" => Ok(Json(RecipeExportBundle {
+            format: 1,
+            generated_at: Utc::now(),
+            recipe: export,
+        })
+        .into_response()),
+        "markdown" | "md" => {
+            let markdown = export.to_markdown(&recipe.per_serving, recipe.untracked_count);
+            Ok((
+                [(header::CONTENT_TYPE, "text/markdown; charset=utf-8")],
+                markdown,
+            )
+                .into_response())
+        }
+        other => Err(ApiError::bad_request(format!(
+            "unknown format '{other}': use json or markdown"
+        ))),
+    }
+}
+
+/// A loaded recipe in the portable shape, with sub-recipes inlined as far as
+/// `viewer` may see them. Boxed because it recurses; the depth is bounded by
+/// the database's nesting cap, not by anything here.
+pub fn export_recipe<'a>(
+    state: &'a AppState,
+    viewer: Option<Uuid>,
+    recipe: &'a Recipe,
+) -> Pin<Box<dyn Future<Output = ApiResult<RecipeExport>> + Send + 'a>> {
+    Box::pin(async move {
+        let mut items = Vec::with_capacity(recipe.items.len());
+        for item in &recipe.items {
+            let exported = if item.food_id.is_some() {
+                RecipeExportItem {
+                    food: Some(FoodRef {
+                        key: food_key(&item.name, item.brand.as_deref()),
+                        name: item.name.clone(),
+                        brand: item.brand.clone(),
+                        variant_label: item.variant_label.clone(),
+                    }),
+                    quantity_g: item.quantity_g,
+                    note: item.note.clone(),
+                    ..Default::default()
+                }
+            } else if let Some(sub_id) = item.sub_recipe_id {
+                match load_recipe(state, viewer, sub_id).await {
+                    Ok(sub) => RecipeExportItem {
+                        recipe: Some(Box::new(export_recipe(state, viewer, &sub).await?)),
+                        servings: item.servings,
+                        note: item.note.clone(),
+                        ..Default::default()
+                    },
+                    // A sub-recipe the author built on but has not shared. Its
+                    // figures are already in the totals, but its ingredient
+                    // list is theirs, so the file says what it is rather than
+                    // listing it or dropping it.
+                    Err(ApiError::NotFound(_)) => RecipeExportItem {
+                        label: Some(format!(
+                            "{} serving{} of {} (a recipe not shared with you)",
+                            item.servings.unwrap_or(1.0),
+                            if item.servings == Some(1.0) { "" } else { "s" },
+                            item.name
+                        )),
+                        note: item.note.clone(),
+                        ..Default::default()
+                    },
+                    Err(e) => return Err(e),
+                }
+            } else {
+                RecipeExportItem {
+                    label: item.label.clone(),
+                    note: item.note.clone(),
+                    ..Default::default()
+                }
+            };
+            items.push(exported);
+        }
+
+        Ok(RecipeExport {
+            name: recipe.name.clone(),
+            description: recipe.description.clone(),
+            instructions: recipe.instructions.clone(),
+            servings: recipe.servings,
+            is_public: recipe.is_public,
+            items,
+        })
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Import from a URL
+// ---------------------------------------------------------------------------
+
+/// How many foods to offer per ingredient line.
+const CANDIDATES_PER_LINE: usize = 5;
+
+#[utoipa::path(
+    post, path = "/api/v1/recipes/import", tag = "recipes",
+    security(("bearer" = [])),
+    request_body = ImportRecipeRequest,
+    responses(
+        (status = 200, description = "A draft read off the page: nothing is saved", body = RecipeDraft),
+        (status = 400, description = "Not an importable URL, or no recipe on the page", body = crate::error::ErrorBody),
+        (status = 502, description = "The page could not be fetched", body = crate::error::ErrorBody),
+    )
+)]
+pub async fn import_from_url(
+    State(state): State<AppState>,
+    _user: CurrentUser,
+    Json(body): Json<ImportRecipeRequest>,
+) -> ApiResult<Json<RecipeDraft>> {
+    body.validate()?;
+
+    let page = fetch_public_page(&body.url).await?;
+
+    // A URL may point straight at a JSON-LD document; anything else is a
+    // page with the block somewhere inside it.
+    let scraped = if page.content_type.starts_with("application/ld+json")
+        || page.content_type.starts_with("application/json")
+    {
+        serde_json::from_str::<serde_json::Value>(&page.body)
+            .ok()
+            .as_ref()
+            .and_then(jsonld::recipe_from_json)
+    } else {
+        jsonld::recipe_from_html(&page.body)
+    };
+    let scraped = scraped.ok_or_else(|| {
+        ApiError::bad_request("no recipe found on that page: it carries no schema.org Recipe data")
+    })?;
+
+    let mut lines = Vec::with_capacity(scraped.ingredients.len());
+    for raw in &scraped.ingredients {
+        let parsed = parse_ingredient(raw);
+        let term = parsed.search_term();
+        let candidates = if term.is_empty() {
+            Vec::new()
+        } else {
+            super::search::candidates(&state, &term, CANDIDATES_PER_LINE)
+                .await?
+                .into_iter()
+                .map(|(tier, food)| DraftCandidate {
+                    food_id: food.id,
+                    name: food.name,
+                    brand: food.brand,
+                    serving_size_g: food.serving_size_g,
+                    calories_kcal: food.calories_kcal,
+                    protein_g: food.protein_g,
+                    carbs_g: food.carbs_g,
+                    fat_g: food.fat_g,
+                    tier,
+                })
+                .collect()
+        };
+        lines.push(DraftLine {
+            text: parsed.text,
+            quantity: parsed.quantity,
+            unit: parsed.unit,
+            name: parsed.name,
+            grams: parsed.grams,
+            candidates,
+        });
+    }
+
+    let instructions = if scraped.instructions.is_empty() {
+        None
+    } else {
+        Some(scraped.instructions.join("\n"))
+    };
+
+    Ok(Json(RecipeDraft {
+        name: if scraped.name.trim().is_empty() {
+            "Imported recipe".to_string()
+        } else {
+            scraped.name.chars().take(200).collect()
+        },
+        description: scraped.description.map(|d| d.chars().take(2000).collect()),
+        servings: scraped.servings,
+        instructions: instructions.map(|i| i.chars().take(20000).collect()),
+        lines,
+        source_url: page.url,
+        image_url: scraped.image,
+        author: scraped.author,
+    }))
 }

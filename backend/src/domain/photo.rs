@@ -47,6 +47,13 @@ pub fn photo_url(id: Uuid) -> String {
     format!("/api/v1/photos/{id}")
 }
 
+/// Where a photo of a public recipe can be fetched without signing in. The
+/// route applies the same visibility rule as `photo_url` with no viewer, so
+/// it answers for exactly the photos a stranger may see and 404s the rest.
+pub fn public_photo_url(id: Uuid) -> String {
+    format!("/api/v1/public/photos/{id}")
+}
+
 impl From<PhotoRow> for Photo {
     fn from(r: PhotoRow) -> Self {
         Self {

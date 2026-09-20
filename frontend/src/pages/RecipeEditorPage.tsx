@@ -1,24 +1,28 @@
 import { useEffect, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { ArrowLeft, ExternalLink, Globe, Pencil, Plus, X } from 'lucide-react'
+import {
+  ArrowLeft,
+  ExternalLink,
+  FileJson,
+  FileText,
+  Globe,
+  Link2,
+  Pencil,
+  Plus,
+  Printer,
+  X,
+} from 'lucide-react'
 
 import { api } from '@/api/endpoints'
 import type { RecipeInput } from '@/api/endpoints'
-import type { Food, Nutrients, Recipe, RecipeSummary } from '@/api/types'
+import type { Food, Nutrients, Recipe, RecipeDraft, RecipeSummary } from '@/api/types'
 import { withNetCarbs } from '@/lib/nutrients'
-import { grams, kcal, round } from '@/lib/format'
-import { instructionSteps } from '@/lib/recipeText'
+import { grams, kcal } from '@/lib/format'
+import { ZERO, foodItem, recipeItem, textItem, type DraftItem } from '@/lib/recipeDraft'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
-import {
-  Card,
-  CardAction,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from '@/components/ui/card'
+import { Card, CardAction, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -28,45 +32,10 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import FoodPicker from '@/components/FoodPicker'
 import RecipePicker from '@/components/RecipePicker'
 import PhotoStrip from '@/components/PhotoStrip'
-import { Empty, ErrorNote, MacroRow, Spinner } from '@/components/shared'
-
-/** The four figures the live totals below need. */
-type Macros = Pick<Nutrients, 'calories_kcal' | 'protein_g' | 'carbs_g' | 'fat_g'>
-
-/**
- * An ingredient being edited.
- *
- * Both kinds are held as an amount times a per-unit figure — grams of a food,
- * or servings of a recipe — so the running totals are one multiplication and
- * never have to ask which kind a row is.
- */
-interface DraftItem {
-  key: string
-  kind: 'food' | 'recipe' | 'text'
-  /** The food id or the sub-recipe id. Empty for a free-text ingredient,
-   *  which points at nothing — that is what makes it free text. */
-  refId: string
-  name: string
-  brand: string | null
-  /** Grams for a food, servings for a recipe. */
-  amount: number
-  /** Nutrients in one gram of the food, or one serving of the recipe. */
-  perUnit: Macros
-  /** Grams in one unit: 1 for a food, and a serving's weight for a recipe. */
-  gramsPerUnit: number
-}
-
-const ZERO: Nutrients = {
-  calories_kcal: 0,
-  protein_g: 0,
-  carbs_g: 0,
-  fat_g: 0,
-  fiber_g: 0,
-  sugar_g: 0,
-  saturated_fat_g: 0,
-  sodium_mg: 0,
-  net_carbs_g: 0,
-}
+import RecipeReadout, { NutritionCard } from '@/components/RecipeReadout'
+import RecipeImportReview from '@/components/RecipeImportReview'
+import { CopyLinkButton } from '@/components/CopyLinkButton'
+import { Empty, ErrorNote, Spinner } from '@/components/shared'
 
 /**
  * Add an ingredient that is only words.
@@ -109,219 +78,144 @@ function TextIngredientForm({ onAdd }: { onAdd: (label: string) => void }) {
 }
 
 /**
- * The totals block, shared by the read view and the editor so the two can
- * never drift apart in what they say or how they say it.
+ * Import a recipe from a page.
+ *
+ * Its own component so the address box has its own state, and so the
+ * request lives with the box: the page only hears about it once the server
+ * has read the page and handed back a draft.
  */
-function NutritionCard({
-  total,
-  perServing,
-  servings,
-  weight,
-  untracked,
-  someNested,
-  live,
-}: {
-  total: Nutrients
-  perServing: Nutrients
-  servings: number
-  weight: number
-  untracked: number
-  someNested: boolean
-  /** Whether the figures are recomputing from a draft, or are the saved ones. */
-  live: boolean
-}) {
+function ImportFromUrlForm({ onDraft }: { onDraft: (draft: RecipeDraft) => void }) {
+  const [url, setUrl] = useState('')
+  const fetchDraft = useMutation({
+    mutationFn: () => api.importRecipeFromUrl(url.trim()),
+    onSuccess: onDraft,
+  })
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Nutrition</CardTitle>
-        {live && (
-          <CardDescription>Recomputed as you edit, the same way the server does.</CardDescription>
-        )}
-      </CardHeader>
-      <CardContent className="space-y-3">
-        <div className="grid gap-4 sm:grid-cols-2">
-          <div className="space-y-1">
-            <p className="text-muted-foreground text-xs">Whole recipe · {grams(weight, 0)}</p>
-            <MacroRow n={total} />
-          </div>
-          <div className="space-y-1">
-            <p className="text-muted-foreground text-xs">
-              Per serving ({round(servings, 2)} servings)
-            </p>
-            <MacroRow n={perServing} />
-          </div>
-        </div>
-
-        {/* Said plainly rather than left to be inferred from the ingredient
-            list. A total that silently omits three ingredients is worse than
-            no total, and the count includes ones inside sub-recipes, which
-            you cannot see from this page at all. */}
-        {untracked > 0 && (
-          <p className="text-muted-foreground text-xs">
-            Excludes {untracked} ingredient{untracked === 1 ? '' : 's'} with no nutrition
-            information
-            {someNested ? ', some inside a sub-recipe' : ''}.
-          </p>
-        )}
-      </CardContent>
-    </Card>
+    <form
+      className="space-y-3"
+      onSubmit={(e) => {
+        e.preventDefault()
+        if (url.trim()) fetchDraft.mutate()
+      }}
+    >
+      <div className="space-y-1.5">
+        <Label htmlFor="r-import-url">Address of the recipe</Label>
+        <Input
+          id="r-import-url"
+          type="url"
+          autoFocus
+          inputMode="url"
+          placeholder="https://…"
+          value={url}
+          onChange={(e) => setUrl(e.target.value)}
+        />
+      </div>
+      <ErrorNote error={fetchDraft.error} />
+      <Button type="submit" disabled={!url.trim() || fetchDraft.isPending}>
+        {fetchDraft.isPending ? 'Reading the page…' : 'Read the page'}
+      </Button>
+      <p className="text-muted-foreground text-xs">
+        Most recipe sites describe the recipe in a form search engines read, and that is what is
+        used here: the name, the servings, the ingredient lines and the method. Each ingredient line
+        is then looked up in the food database for you to confirm. Nothing is saved until you create
+        the recipe.
+      </p>
+    </form>
   )
 }
 
 /**
  * A recipe to read, not a form with its inputs switched off.
  *
- * This page used to be the editor for everyone: a shared recipe showed its
- * description in a greyed-out single-line input and its method in a disabled
- * five-row textarea, and your own looked the same while you were cooking from
- * it. The text is now laid out as text -- the description as a paragraph, the
- * method as numbered steps -- and the form only appears when you ask to edit.
+ * The recipe itself is `RecipeReadout`, which the public page renders too;
+ * what this adds is everything a signed-in reader can do with it — edit it
+ * if it is theirs, copy its link if it is shared, save it as a file, print
+ * it — and the photo strip through the authenticated route, with uploads
+ * for the author.
  */
 function RecipeView({ recipe, onEdit }: { recipe: Recipe; onEdit: () => void }) {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
-  const steps = recipe.instructions ? instructionSteps(recipe.instructions) : []
+  const download = useMutation({
+    mutationFn: (format: 'json' | 'markdown') =>
+      api.downloadRecipeExport(recipe.id, recipe.name, format),
+  })
 
   return (
-    <div className="space-y-4">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="min-w-0">
-          <h1 className="text-2xl font-semibold tracking-tight">{recipe.name}</h1>
-          <p className="text-muted-foreground text-sm">
-            {round(recipe.servings, 2)} serving
-            {recipe.servings === 1 ? '' : 's'} · {grams(recipe.total_weight_g, 0)}
-            {recipe.is_public && recipe.is_owner ? ' · shared' : ''}
-          </p>
-        </div>
-        <div className="flex items-center gap-2">
+    <RecipeReadout
+      recipe={recipe}
+      actions={
+        <>
           {recipe.is_owner && (
             <Button variant="outline" size="sm" onClick={onEdit}>
               <Pencil /> Edit
             </Button>
           )}
+          {recipe.is_public && <CopyLinkButton url={api.publicRecipeUrl(recipe.id)} />}
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={download.isPending}
+            onClick={() => download.mutate('markdown')}
+            title="Save as a Markdown recipe card"
+          >
+            <FileText /> Markdown
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={download.isPending}
+            onClick={() => download.mutate('json')}
+            title="Save as JSON, with foods named rather than numbered"
+          >
+            <FileJson /> JSON
+          </Button>
+          <Button variant="ghost" size="sm" onClick={() => window.print()}>
+            <Printer /> Print
+          </Button>
           <Button variant="ghost" size="sm" onClick={() => navigate('/recipes')}>
             <ArrowLeft /> Back
           </Button>
-        </div>
-      </div>
-
-      {!recipe.is_owner && (
-        <Alert>
-          <Globe />
-          <AlertDescription>
-            Shared by {recipe.author}. You can view it and log it, but only its author can change
-            it.
-          </AlertDescription>
-        </Alert>
-      )}
-
-      {recipe.description && (
-        // Whitespace kept: a description with a line break in it was typed
-        // with a line break in it.
-        <p className="text-muted-foreground max-w-prose text-sm leading-relaxed whitespace-pre-wrap">
-          {recipe.description}
-        </p>
-      )}
-
-      {/* Photos live on the read view, not in the form: an upload is saved
-          the moment it lands, so there is nothing for a Save button to do
-          with it, and the author wants to add one to a recipe they are
-          looking at, not one they are editing. Everyone else just sees them. */}
-      <PhotoStrip
-        queryKey={['photos', 'recipe', recipe.id]}
-        list={() => api.listRecipePhotos(recipe.id)}
-        upload={(file) => api.uploadRecipePhoto(recipe.id, file)}
-        canEdit={recipe.is_owner}
-        size="lg"
-        label="Recipe photo"
-        // The list cards carry a cover photo taken from the same set.
-        onChange={() => queryClient.invalidateQueries({ queryKey: ['recipes'] })}
-      />
-
-      <Card>
-        <CardHeader>
-          <CardTitle>Ingredients</CardTitle>
-        </CardHeader>
-        <CardContent>
-          {recipe.items.length === 0 ? (
-            <Empty>No ingredients.</Empty>
-          ) : (
-            <ul className="divide-y">
-              {recipe.items.map((item) => (
-                <li key={item.id} className="flex items-baseline gap-3 py-2">
-                  {/* Amount first, as on a recipe card, and in a fixed column
-                      so the names line up under each other. */}
-                  <span className="text-muted-foreground tabular w-24 shrink-0 text-right text-sm">
-                    {item.label
-                      ? ''
-                      : item.sub_recipe_id
-                        ? `${round(item.servings ?? 0, 2)} serving${item.servings === 1 ? '' : 's'}`
-                        : grams(item.quantity_g, 0)}
-                  </span>
-                  <span className="min-w-0 flex-1">
-                    {item.sub_recipe_id ? (
-                      <Link
-                        to={`/recipes/${item.sub_recipe_id}`}
-                        className="hover:text-primary inline-flex items-center gap-1.5 font-medium underline-offset-4 hover:underline"
-                      >
-                        {item.name}
-                        <ExternalLink className="size-3.5 shrink-0" />
-                      </Link>
-                    ) : (
-                      <span className="font-medium">{item.name}</span>
-                    )}
-                    {item.brand && (
-                      <span className="text-muted-foreground text-xs"> · {item.brand}</span>
-                    )}
-                    {item.sub_recipe_id && (
-                      <span className="text-muted-foreground text-xs">
-                        {' '}
-                        · recipe, {grams(item.weight_g, 0)}
-                      </span>
-                    )}
-                  </span>
-                  <span className="text-muted-foreground tabular shrink-0 text-xs">
-                    {item.label ? 'not counted' : kcal(item.nutrients.calories_kcal)}
-                  </span>
-                </li>
-              ))}
-            </ul>
+        </>
+      }
+      note={
+        <>
+          {!recipe.is_owner && (
+            <Alert className="print:hidden">
+              <Globe />
+              <AlertDescription>
+                Shared by {recipe.author}. You can view it and log it, but only its author can
+                change it.
+              </AlertDescription>
+            </Alert>
           )}
-        </CardContent>
-      </Card>
-
-      {steps.length > 0 && (
-        <Card>
-          <CardHeader>
-            <CardTitle>Method</CardTitle>
-          </CardHeader>
-          <CardContent>
-            {steps.length === 1 ? (
-              // One step is a paragraph, not a list with a lone "1." on it.
-              <p className="max-w-prose leading-relaxed whitespace-pre-wrap">{steps[0]}</p>
-            ) : (
-              <ol className="max-w-prose list-decimal space-y-3 pl-6 marker:text-muted-foreground marker:tabular-nums">
-                {steps.map((step, i) => (
-                  <li key={i} className="pl-1 leading-relaxed">
-                    {step}
-                  </li>
-                ))}
-              </ol>
-            )}
-          </CardContent>
-        </Card>
-      )}
-
-      <NutritionCard
-        total={recipe.total}
-        perServing={recipe.per_serving}
-        servings={recipe.servings}
-        weight={recipe.total_weight_g}
-        untracked={recipe.untracked_count}
-        someNested={recipe.untracked_count > recipe.items.filter((i) => i.label).length}
-        live={false}
-      />
-    </div>
+          {recipe.is_owner && recipe.is_public && (
+            <p className="text-muted-foreground flex items-center gap-1.5 text-sm print:hidden">
+              <Link2 className="size-4" />
+              Public: anyone holding the link can read this recipe, signed in or not.
+            </p>
+          )}
+          <ErrorNote error={download.error} />
+        </>
+      }
+      photos={
+        // Photos live on the read view, not in the form: an upload is saved
+        // the moment it lands, so there is nothing for a Save button to do
+        // with it, and the author wants to add one to a recipe they are
+        // looking at, not one they are editing. Everyone else just sees them.
+        <PhotoStrip
+          queryKey={['photos', 'recipe', recipe.id]}
+          list={() => api.listRecipePhotos(recipe.id)}
+          upload={(file) => api.uploadRecipePhoto(recipe.id, file)}
+          canEdit={recipe.is_owner}
+          size="lg"
+          label="Recipe photo"
+          // The list cards carry a cover photo taken from the same set.
+          onChange={() => queryClient.invalidateQueries({ queryKey: ['recipes'] })}
+        />
+      }
+      subRecipeHref={(subId) => `/recipes/${subId}`}
+    />
   )
 }
 
@@ -338,6 +232,10 @@ export default function RecipeEditorPage() {
   const [isPublic, setIsPublic] = useState(false)
   const [items, setItems] = useState<DraftItem[]>([])
   const [picking, setPicking] = useState(false)
+  // Import from a URL: the address dialog, then the draft under review. The
+  // review replaces the form until its lines are chosen or it is abandoned.
+  const [importing, setImporting] = useState(false)
+  const [draft, setDraft] = useState<RecipeDraft | null>(null)
   // An existing recipe opens as a page to read; the form is a step away.
   const [editing, setEditing] = useState(isNew)
 
@@ -450,64 +348,40 @@ export default function RecipeEditorPage() {
   const untrackedHere = items.filter((i) => i.kind === 'text').length
   const untracked = Math.max(untrackedHere, existing.data?.untracked_count ?? 0)
 
-  const addFood = (food: Food) => {
-    setItems((prev) => [
-      ...prev,
-      {
-        key: `${food.id}-${Date.now()}`,
-        kind: 'food',
-        refId: food.id,
-        name: food.name,
-        brand: food.brand,
-        amount: food.serving_size_g,
-        // Foods are stored per 100 g; the draft works in per-gram so both kinds
-        // of row share one multiplication.
-        perUnit: {
-          calories_kcal: food.calories_kcal / 100,
-          protein_g: food.protein_g / 100,
-          carbs_g: food.carbs_g / 100,
-          fat_g: food.fat_g / 100,
-        },
-        gramsPerUnit: 1,
-      },
-    ])
+  const addFood = (food: Food, suggested?: number) => {
+    setItems((prev) => [...prev, foodItem(food, suggested ?? food.serving_size_g)])
     setPicking(false)
   }
 
   const addText = (label: string) => {
-    setItems((prev) => [
-      ...prev,
-      {
-        key: `text-${Date.now()}`,
-        kind: 'text',
-        refId: '',
-        name: label,
-        brand: null,
-        // Nothing to scale and nothing to contribute. Carried as zeroes rather
-        // than as a special case so the totals below stay one multiplication.
-        amount: 0,
-        perUnit: { calories_kcal: 0, protein_g: 0, carbs_g: 0, fat_g: 0 },
-        gramsPerUnit: 0,
-      },
-    ])
+    setItems((prev) => [...prev, textItem(label)])
     setPicking(false)
   }
 
   const addRecipe = (recipe: RecipeSummary) => {
-    setItems((prev) => [
-      ...prev,
-      {
-        key: `${recipe.id}-${Date.now()}`,
-        kind: 'recipe',
-        refId: recipe.id,
-        name: recipe.name,
-        brand: null,
-        amount: 1,
-        perUnit: recipe.per_serving,
-        gramsPerUnit: recipe.total_weight_g / recipe.servings,
-      },
-    ])
+    setItems((prev) => [...prev, recipeItem(recipe)])
     setPicking(false)
+  }
+
+  // The reviewed import lands in the form as if it had been typed: the
+  // header fields filled from the page, the chosen lines appended to the
+  // ingredients, and the page's address kept in the description so the
+  // recipe says where it came from. Still nothing saved.
+  const useDraft = (chosen: DraftItem[]) => {
+    if (!draft) return
+    setName(draft.name)
+    setDescription(
+      [
+        draft.description,
+        draft.author ? `By ${draft.author}, from ${draft.source_url}` : `From ${draft.source_url}`,
+      ]
+        .filter(Boolean)
+        .join('\n\n'),
+    )
+    setInstructions(draft.instructions ?? '')
+    if (draft.servings) setServings(String(draft.servings))
+    setItems((prev) => [...prev, ...chosen])
+    setDraft(null)
   }
 
   if (!isNew && existing.isLoading) return <Spinner />
@@ -528,15 +402,26 @@ export default function RecipeEditorPage() {
     setEditing(false)
   }
 
+  if (draft) {
+    return <RecipeImportReview draft={draft} onCancel={() => setDraft(null)} onUse={useDraft} />
+  }
+
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h1 className="text-2xl font-semibold tracking-tight">
           {isNew ? 'New recipe' : 'Edit recipe'}
         </h1>
-        <Button variant="ghost" size="sm" onClick={cancel}>
-          <ArrowLeft /> {isNew ? 'Back' : 'Cancel'}
-        </Button>
+        <div className="flex flex-wrap items-center gap-2">
+          {isNew && (
+            <Button variant="outline" size="sm" onClick={() => setImporting(true)}>
+              <Globe /> Import from a URL
+            </Button>
+          )}
+          <Button variant="ghost" size="sm" onClick={cancel}>
+            <ArrowLeft /> {isNew ? 'Back' : 'Cancel'}
+          </Button>
+        </div>
       </div>
 
       <Card>
@@ -601,12 +486,21 @@ export default function RecipeEditorPage() {
               onCheckedChange={setIsPublic}
               className="mt-0.5"
             />
-            <div>
+            <div className="min-w-0 flex-1 space-y-2">
               <Label htmlFor="r-public">Share this recipe</Label>
               <p className="text-muted-foreground text-xs">
-                Recipes are private by default. Sharing lets every account read and log this one;
-                only you can edit it.
+                Recipes are private by default. Sharing makes this one public: every account can
+                read and log it, and so can anyone holding its link, signed in or not. Only you can
+                edit it, and turning this off takes the link away again.
               </p>
+              {isPublic &&
+                (isNew ? (
+                  <p className="text-muted-foreground text-xs">
+                    The link appears once the recipe is created.
+                  </p>
+                ) : (
+                  <CopyLinkButton url={api.publicRecipeUrl(id!)} />
+                ))}
             </div>
           </div>
         </CardContent>
@@ -749,6 +643,20 @@ export default function RecipeEditorPage() {
           <span className="text-muted-foreground text-xs">Add at least one ingredient.</span>
         )}
       </div>
+
+      <Dialog open={importing} onOpenChange={setImporting}>
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Import from a URL</DialogTitle>
+          </DialogHeader>
+          <ImportFromUrlForm
+            onDraft={(d) => {
+              setImporting(false)
+              setDraft(d)
+            }}
+          />
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={picking} onOpenChange={setPicking}>
         <DialogContent className="sm:max-w-xl">

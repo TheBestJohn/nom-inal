@@ -43,14 +43,18 @@ export default function FoodPicker({
   onPick,
   onPickRecipe,
   autoFocus = true,
+  initialTerm = '',
 }: {
   /** `grams` is a suggestion — the amount used last time, when there was one. */
   onPick: (food: Food, grams?: number) => void
   onPickRecipe?: (recipe: RecentRecipe, servings: number) => void
   autoFocus?: boolean
+  /** What the search box opens with: the recipe importer passes the
+   *  ingredient it is trying to place, so the search is already running. */
+  initialTerm?: string
 }) {
-  const [term, setTerm] = useState('')
-  const [debounced, setDebounced] = useState('')
+  const [term, setTerm] = useState(initialTerm)
+  const [debounced, setDebounced] = useState(initialTerm.trim())
   const [barcode, setBarcode] = useState('')
   const [submittedBarcode, setSubmittedBarcode] = useState('')
   const [externalTerm, setExternalTerm] = useState('')

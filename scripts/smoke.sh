@@ -880,6 +880,47 @@ status "but still not add to it"               404 -X POST "$BASE/recipes/$PREC/
 status "nor delete what is there"              404 -X DELETE "$BASE/photos/$RPHOTO" -H "$OAUTH"
 status "nor retitle it"                        404 -X PATCH "$BASE/photos/$RPHOTO/caption" -H "$OAUTH" -H 'content-type: application/json' -d '{"caption":"mine now"}'
 
+echo "== shared means public"
+# One switch, one meaning. A shared recipe is readable by every account and
+# by anyone holding the link, with no token at all; the recipe's own id is
+# the link, and turning the switch off is how it is revoked. The public page
+# is assembled by the same code as the signed-in one, so the figures agree.
+PUBLIC_VIEW=$(curl -fsS "$BASE/public/recipes/$PREC")
+status "a shared recipe is readable with no token"   200 "$BASE/public/recipes/$PREC"
+expect "and names its author"                        "$(echo "$PUBLIC_VIEW" | j "['author']")"   "Smoke"
+expect "and belongs to nobody reading it"            "$(echo "$PUBLIC_VIEW" | j "['is_owner']")" "False"
+expect "with the figures the signed-in page shows" \
+  "$(echo "$PUBLIC_VIEW" | j "['per_serving']['calories_kcal']")" \
+  "$(curl -fsS "$BASE/recipes/$PREC" -H "$AUTH" | j "['per_serving']['calories_kcal']")"
+expect "and its photos, at the public photo route"   "$(echo "$PUBLIC_VIEW" | j "['photos'][0]['url']")" "/api/v1/public/photos/$RPHOTO"
+status "which serves the bytes with no token"        200 "$BASE/public/photos/$RPHOTO"
+expect "as an image" \
+  "$(curl -fsS -o /dev/null -w '%{content_type}' "$BASE/public/photos/$RPHOTO")" "image/jpeg"
+status "a private recipe is not there"               404 "$BASE/public/recipes/$RID"
+status "not even for its owner: the route takes no token" 404 "$BASE/public/recipes/$RID" -H "$AUTH"
+
+# A weigh-in photo is its owner's alone, and the public route can never
+# reach one: the visibility rule with no viewer only ever admits a photo of
+# a shared recipe.
+PUB_ENTRY=$(curl -fsS -X POST "$BASE/weights" -H "$AUTH" -H 'content-type: application/json' \
+  -d '{"recorded_on":"2026-05-07","weight_kg":81.0}' | j "['id']")
+PUB_WPHOTO=$(curl -fsS -X POST "$BASE/weights/$PUB_ENTRY/photos" -H "$AUTH" -F "file=@$PHOTO" | j "['id']")
+status "a weigh-in photo is never public"            404 "$BASE/public/photos/$PUB_WPHOTO"
+status "not even with its owner's token"             404 "$BASE/public/photos/$PUB_WPHOTO" -H "$AUTH"
+status "though its owner still has it"               200 "$BASE/photos/$PUB_WPHOTO" -H "$AUTH"
+# The weigh-in and its photo are kept: the account export below lists them.
+
+# Un-sharing takes the page and the photos away together; sharing again
+# brings both back at the same address.
+curl -fsS -X PUT "$BASE/recipes/$PREC" -H "$AUTH" -H 'content-type: application/json' -d "{
+  \"name\":\"Photographed\",\"servings\":1,\"is_public\":false,\"items\":[{\"food_id\":\"$OATS\",\"quantity_g\":50}]}" >/dev/null
+status "un-sharing revokes the page"                 404 "$BASE/public/recipes/$PREC"
+status "and the photos with it"                      404 "$BASE/public/photos/$RPHOTO"
+curl -fsS -X PUT "$BASE/recipes/$PREC" -H "$AUTH" -H 'content-type: application/json' -d "{
+  \"name\":\"Photographed\",\"servings\":1,\"is_public\":true,\"items\":[{\"food_id\":\"$OATS\",\"quantity_g\":50}]}" >/dev/null
+status "sharing again restores the same link"        200 "$BASE/public/recipes/$PREC"
+status "a nonsense id is a 404, not an error"        404 "$BASE/public/recipes/00000000-0000-0000-0000-000000000000"
+
 # A recipe that is logged cannot be deleted; its photos must survive the refusal.
 PLOG=$(curl -fsS -X POST "$BASE/diary" -H "$AUTH" -H 'content-type: application/json' \
   -d "{\"logged_on\":\"2026-05-06\",\"meal\":\"lunch\",\"recipe_id\":\"$PREC\",\"recipe_servings\":1}" | j "['id']")
@@ -1026,6 +1067,72 @@ expect "the export is versioned"        "$(echo "$EXPORT" | j "['format']")" "1"
 expect "and carries no internal ids"    "$(echo "$EXPORT" | j " and any('id' in f for f in d['foods'])")" "False"
 expect "a variant exports by parent key" \
   "$(echo "$EXPORT" | j " and [f['variant_of_key'] for f in d['foods'] if f['variant_label']=='cooked'] != [None]")" "True"
+
+echo "== recipe export"
+# The seed-repository shape: no internal ids anywhere, foods named by the
+# same natural key the foods export uses, sub-recipes inlined by name with
+# their own items, free text kept as text.
+REXP=$(curl -fsS "$BASE/recipes/$DISH_ID/export" -H "$AUTH")
+expect "the export is versioned"            "$(echo "$REXP" | j "['format']")" "1"
+expect "and is the recipe by name"          "$(echo "$REXP" | j "['recipe']['name']")" "Smoke dish"
+expect "with no internal ids anywhere" \
+  "$(echo "$REXP" | j " and (lambda walk: walk(walk, d))(lambda w, v: (isinstance(v, dict) and (any(k.endswith('id') for k in v) or any(w(w, x) for x in v.values()))) or (isinstance(v, list) and any(w(w, x) for x in v)))")" "False"
+expect "a food is named by its key"         "$(echo "$REXP" | j "['recipe']['items'][0]['food']['key']")" "whole milk|"
+expect "the key the foods export computes" \
+  "$(echo "$REXP" | j "['recipe']['items'][1]['recipe']['items'][0]['food']['key']")" \
+  "$(echo "$EXPORT" | j " and [f['variant_of_key'] for f in d['foods'] if f['variant_label']=='cooked'][0]")"
+expect "grams travel with it"               "$(echo "$REXP" | j "['recipe']['items'][0]['quantity_g']")" "200.0"
+expect "a sub-recipe is inlined by name"    "$(echo "$REXP" | j "['recipe']['items'][1]['recipe']['name']")" "Smoke sauce"
+expect "with the servings taken of it"      "$(echo "$REXP" | j "['recipe']['items'][1]['servings']")" "2.0"
+expect "and its own items"                  "$(echo "$REXP" | j "['recipe']['items'][1]['recipe']['items'][0]['quantity_g']")" "200.0"
+WEXP=$(curl -fsS "$BASE/recipes/$LOOSE_ID/export?format=json" -H "$AUTH")
+expect "free text is kept as text"          "$(echo "$WEXP" | j "['recipe']['items'][1]['label']")" "salt and pepper to taste"
+
+# Markdown: a recipe card, with the method split into the same steps the
+# recipe page numbers and the nutrition per serving.
+STEPPED=$(curl -fsS -X POST "$BASE/recipes" -H "$AUTH" -H 'content-type: application/json' -d "{
+  \"name\":\"Stepped\",\"servings\":2,\"description\":\"Two lines.\",
+  \"instructions\":\"1. Preheat the oven.\\n2. Roast.\",
+  \"items\":[{\"food_id\":\"$OATS\",\"quantity_g\":100},{\"label\":\"salt\"}]}" | j "['id']")
+MD=$(curl -fsS "$BASE/recipes/$STEPPED/export?format=markdown" -H "$AUTH")
+expect "markdown is served as markdown" \
+  "$(curl -fsS -o /dev/null -w '%{content_type}' "$BASE/recipes/$STEPPED/export?format=markdown" -H "$AUTH")" "text/markdown; charset=utf-8"
+expect "it opens with the title"            "$(echo "$MD" | head -1)" "# Stepped"
+expect "says how many it makes"             "$(echo "$MD" | grep -c '^Makes 2 servings\.$')" "1"
+expect "lists ingredients as amounts"       "$(echo "$MD" | grep -c '^- 100 g Rolled oats$')" "1"
+expect "and free text as itself"            "$(echo "$MD" | grep -c '^- salt$')" "1"
+expect "numbers the method"                 "$(echo "$MD" | grep -c '^2\. Roast\.$')" "1"
+# 379 kcal over 2 servings.
+expect "and gives nutrition per serving"    "$(echo "$MD" | grep -c '^| 190 kcal |')" "1"
+expect "naming what it had to leave out"    "$(echo "$MD" | grep -c '^Excludes 1 ingredient with no nutrition information\.$')" "1"
+DMD=$(curl -fsS "$BASE/recipes/$DISH_ID/export?format=markdown" -H "$AUTH")
+expect "a sub-recipe nests under its line"  "$(echo "$DMD" | grep -c '^  - 200 g Rolled oats$')" "1"
+status "an unknown format is refused"       400 "$BASE/recipes/$STEPPED/export?format=xml" -H "$AUTH"
+status "a private recipe exports for its owner only" 404 "$BASE/recipes/$STEPPED/export" -H "$OAUTH"
+status "a shared one for anyone signed in"  200 "$BASE/recipes/$PUB/export" -H "$OAUTH"
+status "but not for nobody"                 401 "$BASE/recipes/$PUB/export"
+
+echo "== recipe import from a url"
+# The server fetches a page the caller chose, which is request forgery
+# territory: anything private, local or reserved is refused before a
+# connection is opened, and so is anything that is not a web page. The page
+# reading itself is unit-tested against fixtures (cargo test), since a
+# smoke run has no public web to fetch from.
+imp() { curl -s -o /dev/null -w '%{http_code}' -X POST "$BASE/recipes/import" -H "$AUTH" -H 'content-type: application/json' -d "{\"url\":\"$1\"}"; }
+imp_msg() { curl -s -X POST "$BASE/recipes/import" -H "$AUTH" -H 'content-type: application/json' -d "{\"url\":\"$1\"}" | j "['message']"; }
+expect "loopback is refused"                "$(imp "http://127.0.0.1:8080/recipe")" "400"
+expect "and says why"                       "$(imp_msg "http://127.0.0.1:8080/recipe" | grep -c 'private, local or reserved')" "1"
+expect "so is the API's own address"        "$(imp "${BASE%/api/v1}/api/v1/health")" "400"
+expect "and localhost by name"              "$(imp "http://localhost/recipe")" "400"
+expect "and an IPv6 loopback"               "$(imp "http://[::1]/recipe")" "400"
+expect "and a private network"              "$(imp "http://10.0.0.1/recipe")" "400"
+expect "and the cloud metadata address"     "$(imp "http://169.254.169.254/latest/meta-data/")" "400"
+expect "and a non-http scheme"              "$(imp "ftp://example.com/recipe")" "400"
+expect "and a file path"                    "$(imp "file:///etc/passwd")" "400"
+expect "and credentials in the URL"         "$(imp "http://user:secret@example.com/")" "400"
+expect "and something that is not a URL"    "$(imp "not a url at all")" "400"
+status "a missing url is a 400"             400 -X POST "$BASE/recipes/import" -H "$AUTH" -H 'content-type: application/json' -d '{}'
+status "and the import needs a token"       401 -X POST "$BASE/recipes/import" -H 'content-type: application/json' -d '{"url":"https://example.com/"}'
 
 echo "== api keys"
 KEY=$(curl -fsS -X POST "$BASE/keys" -H "$AUTH2" -H 'content-type: application/json' -d '{"name":"smoke dashboard"}')
@@ -1187,7 +1294,7 @@ status "recipe in use cannot be deleted" 400 -X DELETE "$BASE/recipes/$RID" -H "
 
 echo "== openapi"
 PATHS=$(curl -fsS "${BASE%/api/v1}/api/v1/openapi.json" | j " and len(d['paths'])")
-if [ "$PATHS" -ge 50 ]; then pass "spec documents $PATHS paths"; else fail "spec only documents $PATHS paths"; fi
+if [ "$PATHS" -ge 54 ]; then pass "spec documents $PATHS paths"; else fail "spec only documents $PATHS paths"; fi
 
 echo
 if [ "$failures" -eq 0 ]; then

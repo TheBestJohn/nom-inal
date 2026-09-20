@@ -1,4 +1,4 @@
-import { request } from './client'
+import { downloadFile, request } from './client'
 import type {
   AdminStats,
   AdminUserRow,
@@ -25,6 +25,7 @@ import type {
   NutrientBasis,
   NutritionTarget,
   Photo,
+  PublicRecipe,
   Reminder,
   ReminderKind,
   ReminderStatus,
@@ -32,6 +33,7 @@ import type {
   Projection,
   RecentItem,
   Recipe,
+  RecipeDraft,
   RecipeSummary,
   RegistrationStatus,
   SetFocusResponse,
@@ -104,6 +106,15 @@ export interface FoodInput {
   variant_label?: string | null
   /** Stored on the revision this write creates, not on the food. */
   edit_summary?: string | null
+}
+
+/** A recipe name as a filename: lowercase, dashes, nothing the OS minds. */
+function slug(name: string) {
+  const s = name
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+  return s || 'recipe'
 }
 
 function uploadPhotoTo(path: string, file: File, caption?: string) {
@@ -220,6 +231,20 @@ export const api = {
   updateRecipe: (id: string, body: RecipeInput) =>
     request<Recipe>(`/recipes/${id}`, { method: 'PUT', body }),
   deleteRecipe: (id: string) => request<void>(`/recipes/${id}`, { method: 'DELETE' }),
+  /** Shared means public: readable with no token, and so is this call. */
+  publicRecipe: (id: string) => request<PublicRecipe>(`/public/recipes/${id}`),
+  /** Where a shared recipe lives for anyone holding the link. */
+  publicRecipeUrl: (id: string) => `${window.location.origin}/r/${id}`,
+  /** Saves the recipe as a file: the seed-repository JSON, or a Markdown card. */
+  downloadRecipeExport: (id: string, name: string, format: 'json' | 'markdown') =>
+    downloadFile(
+      `/api/v1/recipes/${id}/export?format=${format}`,
+      `${slug(name)}.${format === 'json' ? 'json' : 'md'}`,
+    ),
+  /** Reads a page's schema.org recipe into a draft. Nothing is saved. */
+  importRecipeFromUrl: (url: string) =>
+    request<RecipeDraft>('/recipes/import', { method: 'POST', body: { url } }),
+
   /** Turn one meal of one day into a recipe, entries as logged. */
   recipeFromMeal: (body: { date: string; meal: string; name: string; servings?: number }) =>
     request<Recipe>('/recipes/from-meal', { method: 'POST', body }),

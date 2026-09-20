@@ -33,6 +33,8 @@ pub struct RecipeItemRow {
     pub name: String,
     /// Only a food has one.
     pub brand: Option<String>,
+    /// Set when the food is a preparation variant: "cooked", "drained".
+    pub variant_label: Option<String>,
     pub calories_kcal: f64,
     pub protein_g: f64,
     pub carbs_g: f64,
@@ -73,6 +75,10 @@ pub struct RecipeItem {
     pub label: Option<String>,
     pub name: String,
     pub brand: Option<String>,
+    /// For a food that is a preparation variant of another, what makes it
+    /// one: "cooked", "drained". Null otherwise. Part of the food's identity
+    /// in an export, since a variant shares its parent's name and brand.
+    pub variant_label: Option<String>,
     pub quantity_g: Option<f64>,
     pub servings: Option<f64>,
     /// What this ingredient weighs: its grams for a food, and for a
@@ -248,4 +254,342 @@ pub struct UpsertRecipeRequest {
     #[validate(nested)]
     #[validate(length(min = 1, message = "must contain at least one ingredient"))]
     pub items: Vec<RecipeItemInput>,
+}
+
+// ---------------------------------------------------------------------------
+// Sharing, export and import
+// ---------------------------------------------------------------------------
+
+/// A shared recipe as a stranger sees it: the recipe, with its photos, whose
+/// URLs point at the public photo route since the reader has no token.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct PublicRecipe {
+    #[serde(flatten)]
+    pub recipe: Recipe,
+    pub photos: Vec<super::photo::Photo>,
+}
+
+/// A food named by its natural identity rather than an id, so a recipe
+/// export can be read on another instance. `key` is the same string the
+/// foods export uses (`FoodExport::variant_of_key`), and is what an import
+/// looks the food up by; name and brand are there for a person reading the
+/// file.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ToSchema)]
+pub struct FoodRef {
+    pub key: String,
+    pub name: String,
+    pub brand: Option<String>,
+    /// A variant shares its parent's key; this is what tells them apart,
+    /// exactly as `variant_label` does beside `variant_of_key` in the foods
+    /// export.
+    #[serde(default)]
+    pub variant_label: Option<String>,
+}
+
+/// One exported ingredient. Exactly one of `food`, `recipe` and `label` is
+/// set, mirroring `RecipeItem`: a food by natural key with its grams, a
+/// sub-recipe inlined with its own items and the servings taken of it, or
+/// a free-text ingredient.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, ToSchema)]
+#[serde(default)]
+pub struct RecipeExportItem {
+    pub food: Option<FoodRef>,
+    pub quantity_g: Option<f64>,
+    /// A sub-recipe, inlined. The schema is recursive here, and utoipa has
+    /// to be told so or it collects schemas forever.
+    #[schema(no_recursion)]
+    pub recipe: Option<Box<RecipeExport>>,
+    pub servings: Option<f64>,
+    pub label: Option<String>,
+    pub note: Option<String>,
+}
+
+/// A recipe with no internal ids in it: sub-recipes inlined by name, foods
+/// referenced by natural key, free text kept as text. What `GET
+/// /recipes/{id}/export?format=json` returns and what the account export
+/// carries, and therefore what the account import reads.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, ToSchema)]
+#[serde(default)]
+pub struct RecipeExport {
+    pub name: String,
+    pub description: Option<String>,
+    pub instructions: Option<String>,
+    pub servings: f64,
+    /// Whether it was shared. Kept in the file so an account restore puts a
+    /// shared recipe back as shared; a recipe export alone does not need it,
+    /// and an importer that ignores it gets a private recipe.
+    pub is_public: bool,
+    pub items: Vec<RecipeExportItem>,
+}
+
+/// The document `GET /recipes/{id}/export` returns.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct RecipeExportBundle {
+    /// Format version of this document, not of the application.
+    pub format: u32,
+    pub generated_at: DateTime<Utc>,
+    pub recipe: RecipeExport,
+}
+
+impl RecipeExport {
+    /// The recipe as Markdown: what someone pastes into a note or prints.
+    ///
+    /// Nutrition is per serving and comes from the caller, since the export
+    /// shape deliberately carries no computed figures; a file with totals in
+    /// it would go stale the moment a food was corrected.
+    pub fn to_markdown(&self, per_serving: &Nutrients, untracked: i64) -> String {
+        let mut out = String::new();
+        out.push_str(&format!("# {}\n\n", self.name.trim()));
+        if let Some(d) = self
+            .description
+            .as_deref()
+            .map(str::trim)
+            .filter(|d| !d.is_empty())
+        {
+            out.push_str(d);
+            out.push_str("\n\n");
+        }
+        out.push_str(&format!(
+            "Makes {} serving{}.\n\n",
+            trim_float(self.servings),
+            plural(self.servings)
+        ));
+
+        out.push_str("## Ingredients\n\n");
+        write_items(&mut out, &self.items, 0);
+        out.push('\n');
+
+        let steps = self
+            .instructions
+            .as_deref()
+            .map(super::recipe_text::instruction_steps)
+            .unwrap_or_default();
+        if !steps.is_empty() {
+            out.push_str("## Method\n\n");
+            for (i, step) in steps.iter().enumerate() {
+                out.push_str(&format!("{}. {}\n", i + 1, step));
+            }
+            out.push('\n');
+        }
+
+        out.push_str("## Nutrition per serving\n\n");
+        out.push_str(
+            "| Calories | Protein | Carbs | Net carbs | Fat | Fiber | Sugar | Sat. fat | Sodium |\n",
+        );
+        out.push_str("|---|---|---|---|---|---|---|---|---|\n");
+        out.push_str(&format!(
+            "| {} kcal | {} g | {} g | {} g | {} g | {} g | {} g | {} g | {} mg |\n",
+            per_serving.calories_kcal.round(),
+            r1(per_serving.protein_g),
+            r1(per_serving.carbs_g),
+            r1(per_serving.net_carbs_g()),
+            r1(per_serving.fat_g),
+            r1(per_serving.fiber_g),
+            r1(per_serving.sugar_g),
+            r1(per_serving.saturated_fat_g),
+            per_serving.sodium_mg.round(),
+        ));
+        if untracked > 0 {
+            out.push_str(&format!(
+                "\nExcludes {untracked} ingredient{} with no nutrition information.\n",
+                if untracked == 1 { "" } else { "s" }
+            ));
+        }
+        out
+    }
+}
+
+fn write_items(out: &mut String, items: &[RecipeExportItem], indent: usize) {
+    let pad = "  ".repeat(indent);
+    for item in items {
+        if let Some(food) = &item.food {
+            let brand = food
+                .brand
+                .as_deref()
+                .map(|b| format!(" ({b})"))
+                .unwrap_or_default();
+            out.push_str(&format!(
+                "{pad}- {} g {}{brand}{}\n",
+                trim_float(item.quantity_g.unwrap_or_default()),
+                food.name,
+                note(item)
+            ));
+        } else if let Some(sub) = &item.recipe {
+            let servings = item.servings.unwrap_or(1.0);
+            out.push_str(&format!(
+                "{pad}- {} serving{} of {}{}\n",
+                trim_float(servings),
+                plural(servings),
+                sub.name,
+                note(item)
+            ));
+            write_items(out, &sub.items, indent + 1);
+        } else if let Some(label) = &item.label {
+            out.push_str(&format!("{pad}- {label}{}\n", note(item)));
+        }
+    }
+}
+
+fn note(item: &RecipeExportItem) -> String {
+    item.note
+        .as_deref()
+        .map(str::trim)
+        .filter(|n| !n.is_empty())
+        .map(|n| format!(" — {n}"))
+        .unwrap_or_default()
+}
+
+fn plural(n: f64) -> &'static str {
+    if n == 1.0 {
+        ""
+    } else {
+        "s"
+    }
+}
+
+/// "2" rather than "2.0", "1.5" rather than "1.500000".
+fn trim_float(v: f64) -> String {
+    let s = format!("{:.2}", v);
+    let s = s.trim_end_matches('0').trim_end_matches('.');
+    if s.is_empty() {
+        "0".to_string()
+    } else {
+        s.to_string()
+    }
+}
+
+fn r1(v: f64) -> String {
+    trim_float((v * 10.0).round() / 10.0)
+}
+
+/// `POST /recipes/import`.
+#[derive(Debug, Deserialize, Validate, ToSchema)]
+pub struct ImportRecipeRequest {
+    /// The page to read. Only http and https, and only public addresses.
+    #[validate(length(min = 1, max = 2048, message = "must be 1-2048 characters"))]
+    pub url: String,
+}
+
+/// A food that might be what an ingredient line means, with enough of its
+/// figures for a client to show a running total before anything is saved.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct DraftCandidate {
+    pub food_id: Uuid,
+    pub name: String,
+    pub brand: Option<String>,
+    pub serving_size_g: f64,
+    /// Per 100 g, as stored.
+    pub calories_kcal: f64,
+    pub protein_g: f64,
+    pub carbs_g: f64,
+    pub fat_g: f64,
+    /// How the search found it: `exact`, `prefix`, `contains` or `fuzzy`.
+    /// A client should only pre-select a candidate from the first two —
+    /// the same rule the food picker applies to its tiers.
+    pub tier: &'static str,
+}
+
+/// One ingredient line of a draft: the line as written, what was read off
+/// it, and the foods it might be. Nothing here is saved.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct DraftLine {
+    pub text: String,
+    pub quantity: Option<f64>,
+    pub unit: Option<String>,
+    /// The ingredient with its measure removed, as searched for.
+    pub name: String,
+    /// Grams, when the line said a mass; null for a household measure,
+    /// which the client has to ask about rather than guess.
+    pub grams: Option<f64>,
+    pub candidates: Vec<DraftCandidate>,
+}
+
+/// What `POST /recipes/import` returns: a recipe read off a page, resolved
+/// as far as it can be without a person, and not yet written anywhere.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct RecipeDraft {
+    pub name: String,
+    pub description: Option<String>,
+    pub servings: Option<f64>,
+    /// One step per line, ready for the recipe form.
+    pub instructions: Option<String>,
+    pub lines: Vec<DraftLine>,
+    /// Where it came from, and the page's cover image if it named one. The
+    /// image is not fetched; a client may show it or ignore it.
+    pub source_url: String,
+    pub image_url: Option<String>,
+    pub author: Option<String>,
+}
+
+#[cfg(test)]
+mod export_tests {
+    use super::*;
+
+    #[test]
+    fn markdown_reads_like_a_recipe_card() {
+        let sub = RecipeExport {
+            name: "Sauce".into(),
+            servings: 4.0,
+            items: vec![RecipeExportItem {
+                food: Some(FoodRef {
+                    key: "tomato|".into(),
+                    name: "Tomato".into(),
+                    brand: None,
+                    variant_label: None,
+                }),
+                quantity_g: Some(400.0),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let recipe = RecipeExport {
+            name: "Pasta".into(),
+            description: Some("Quick.".into()),
+            instructions: Some("1. Boil\n2. Toss".into()),
+            servings: 2.0,
+            is_public: false,
+            items: vec![
+                RecipeExportItem {
+                    food: Some(FoodRef {
+                        key: "spaghetti|barilla".into(),
+                        name: "Spaghetti".into(),
+                        brand: Some("Barilla".into()),
+                        variant_label: None,
+                    }),
+                    quantity_g: Some(200.0),
+                    ..Default::default()
+                },
+                RecipeExportItem {
+                    recipe: Some(Box::new(sub)),
+                    servings: Some(1.0),
+                    ..Default::default()
+                },
+                RecipeExportItem {
+                    label: Some("salt to taste".into()),
+                    ..Default::default()
+                },
+            ],
+        };
+        let per_serving = Nutrients {
+            calories_kcal: 412.4,
+            protein_g: 14.25,
+            carbs_g: 80.0,
+            fat_g: 2.0,
+            fiber_g: 5.0,
+            sugar_g: 3.0,
+            saturated_fat_g: 0.5,
+            sodium_mg: 120.0,
+        };
+        let md = recipe.to_markdown(&per_serving, 1);
+        assert_eq!(
+            md,
+            "# Pasta\n\nQuick.\n\nMakes 2 servings.\n\n## Ingredients\n\n\
+             - 200 g Spaghetti (Barilla)\n- 1 serving of Sauce\n  - 400 g Tomato\n- salt to taste\n\n\
+             ## Method\n\n1. Boil\n2. Toss\n\n## Nutrition per serving\n\n\
+             | Calories | Protein | Carbs | Net carbs | Fat | Fiber | Sugar | Sat. fat | Sodium |\n\
+             |---|---|---|---|---|---|---|---|---|\n\
+             | 412 kcal | 14.3 g | 80 g | 75 g | 2 g | 5 g | 3 g | 0.5 g | 120 mg |\n\
+             \nExcludes 1 ingredient with no nutrition information.\n"
+        );
+    }
 }

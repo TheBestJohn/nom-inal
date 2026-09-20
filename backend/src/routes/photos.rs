@@ -7,7 +7,7 @@ use axum::Router;
 use uuid::Uuid;
 
 use crate::auth::CurrentUser;
-use crate::domain::photo::{Photo, PhotoRow};
+use crate::domain::photo::{public_photo_url, Photo, PhotoRow};
 use crate::error::{ApiError, ApiResult};
 use crate::extract::Json;
 use crate::state::AppState;
@@ -36,6 +36,12 @@ const COLUMNS: &str = "p.id, p.weight_entry_id, p.recipe_id, p.relative_path, p.
 /// `recipes r`. One definition, used by every read: a weigh-in photo is its
 /// owner's alone; a recipe photo goes with the recipe, so a shared recipe's
 /// photos are shared too.
+///
+/// `$2` is the viewer, and may be NULL for someone who has not signed in.
+/// SQL's three-valued logic then does the right thing without a second
+/// rule: `NULL = user_id` is unknown, so only `r.is_public` being true can
+/// make the row visible, and a weigh-in photo — whose `r` is the empty side
+/// of an outer join — never is.
 const VISIBLE: &str = "(p.user_id = $2 OR r.is_public)";
 
 /// What a photo is attached to. The upload, the ownership check before it
@@ -133,6 +139,31 @@ pub async fn list_for_recipe(
     .await?;
 
     Ok(Json(rows.into_iter().map(Into::into).collect()))
+}
+
+/// The photos of a recipe as a reader with no token gets them: only when the
+/// recipe is public, and with each URL pointing at the public photo route.
+/// The same `VISIBLE` rule as every other read, with no viewer.
+pub async fn list_public(state: &AppState, recipe_id: Uuid) -> ApiResult<Vec<Photo>> {
+    let rows: Vec<PhotoRow> = sqlx::query_as(&format!(
+        "SELECT {COLUMNS} FROM photos p
+         JOIN recipes r ON r.id = p.recipe_id
+         WHERE p.recipe_id = $1 AND {VISIBLE}
+         ORDER BY p.created_at ASC"
+    ))
+    .bind(recipe_id)
+    .bind(Option::<Uuid>::None)
+    .fetch_all(&state.db)
+    .await?;
+
+    Ok(rows
+        .into_iter()
+        .map(|row| {
+            let mut photo: Photo = row.into();
+            photo.url = public_photo_url(photo.id);
+            photo
+        })
+        .collect())
 }
 
 #[utoipa::path(
@@ -264,16 +295,28 @@ pub async fn serve(
     user: CurrentUser,
     Path(id): Path<Uuid>,
 ) -> ApiResult<Response> {
-    // The visibility rule is applied here, on the bytes, rather than only on
-    // the listings: a guessable URL must not be enough to read a photo that
-    // was not meant for you.
+    serve_visible(&state, Some(user.id), id).await
+}
+
+/// The bytes of a photo, if `viewer` may see it. `None` is a reader who has
+/// not signed in, for whom only a public recipe's photos exist.
+///
+/// The visibility rule is applied here, on the bytes, rather than only on
+/// the listings: a guessable URL must not be enough to read a photo that was
+/// not meant for you. The public route calls this with no viewer rather than
+/// carrying a rule of its own, so the two cannot drift.
+pub async fn serve_visible(
+    state: &AppState,
+    viewer: Option<Uuid>,
+    id: Uuid,
+) -> ApiResult<Response> {
     let row: PhotoRow = sqlx::query_as(&format!(
         "SELECT {COLUMNS} FROM photos p
          LEFT JOIN recipes r ON r.id = p.recipe_id
          WHERE p.id = $1 AND {VISIBLE}"
     ))
     .bind(id)
-    .bind(user.id)
+    .bind(viewer)
     .fetch_optional(&state.db)
     .await?
     .ok_or(ApiError::NotFound("photo"))?;

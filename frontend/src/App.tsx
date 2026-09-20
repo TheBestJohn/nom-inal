@@ -1,4 +1,4 @@
-import { NavLink, Navigate, Route, Routes, useLocation } from 'react-router-dom'
+import { NavLink, Navigate, Route, Routes, useLocation, useMatch } from 'react-router-dom'
 import {
   BookOpen,
   CircleDot,
@@ -23,6 +23,7 @@ import RecipesPage from '@/pages/RecipesPage'
 import RecipeEditorPage from '@/pages/RecipeEditorPage'
 import WeightPage from '@/pages/WeightPage'
 import WelcomePage from '@/pages/WelcomePage'
+import PublicRecipePage from '@/pages/PublicRecipePage'
 import AdminPage from '@/pages/AdminPage'
 import SettingsLayout from '@/pages/settings/SettingsLayout'
 import FocusSettings from '@/pages/settings/FocusSettings'
@@ -72,6 +73,12 @@ function WelcomeGate() {
 export default function App() {
   const { user, loading, signOut } = useAuth()
 
+  // A shared recipe's public page sits outside the shell entirely: it needs
+  // no session, so it renders before the token check, for a stranger and a
+  // signed-in reader alike, with its own small header instead of the nav.
+  const publicRecipe = useMatch('/r/:id')
+  if (publicRecipe) return <PublicRecipePage id={publicRecipe.params.id ?? ''} />
+
   if (loading) {
     return (
       <div className="grid min-h-dvh place-items-center">
@@ -88,7 +95,7 @@ export default function App() {
 
   return (
     <div className="flex min-h-dvh flex-col">
-      <header className="bg-background/85 sticky top-0 z-30 border-b backdrop-blur-sm">
+      <header className="bg-background/85 sticky top-0 z-30 border-b backdrop-blur-sm print:hidden">
         <div className="mx-auto flex h-14 w-full max-w-5xl items-center justify-between gap-3 px-4">
           <div className="flex items-center gap-2 font-semibold tracking-tight">
             <span aria-hidden="true">🥗</span>
