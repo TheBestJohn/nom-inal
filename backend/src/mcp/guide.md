@@ -59,7 +59,9 @@ food later corrects every recipe that uses it. An ingredient is exactly one of:
 
 `per_serving` is `total / servings`. Recipes are private by default; a public
 recipe (`is_public: true`) can be read and logged by every account on the
-instance but changed only by its author.
+instance, and by anyone holding its link — the app shows it at `/r/{id}`, and
+`public_recipe` returns it with no key at all — but changed only by its author.
+Setting `is_public` is publishing; say so before doing it on someone's behalf.
 
 ## Foods are shared; recipes are yours
 
@@ -112,6 +114,26 @@ weigh-ins. Report the shortfall rather than guessing a number. A projection
 carries `caution: true` when a rate is past about 1 % of body weight a week;
 say so when quoting it. None of this is advice: it is arithmetic on the
 person's own records.
+
+## Files out and in
+
+`recipes_export` returns a recipe with no internal ids in it — foods named by
+`{ key, name, brand }`, sub-recipes inlined — or, with `format: "markdown"`,
+a recipe card. `recipes_import_from_url` reads a page's schema.org recipe and
+returns a **draft**: nothing is saved. Each `lines[]` entry carries the line
+as written, what was parsed off it (`quantity`, `unit`, `name`, and `grams`
+only when the line stated a mass), and `candidates[]` with the search `tier`
+that found each. Take a candidate without asking only from the `exact` or
+`prefix` tier; anything looser is a guess to confirm with the person, and a
+line with no candidate becomes a `label` ingredient. A cup or a tablespoon
+has no `grams`; ask what it weighs rather than inventing a figure. Only
+public web addresses can be fetched: a private, loopback or non-http address
+is a 400.
+
+`account_export` is everything the account owns in one document, without
+passwords or keys; `account_import` merges such a document back in by name
+and date, never duplicating, and reports `created`, `updated` and `skipped`
+per kind with `notes` for anything it could not do as asked.
 
 ## Search
 
