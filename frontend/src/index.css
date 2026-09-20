@@ -164,3 +164,40 @@
     font-variant-numeric: tabular-nums;
   }
 }
+
+/* Printing a recipe. The read view is already laid out as a recipe card, so
+   printing it is mostly a matter of taking things away: the app chrome and
+   any control marked print:hidden go, the cards lose their borders and
+   shadows so the page reads as one document rather than a stack of boxes,
+   and a card is kept on one page where it can be. Photos are capped so one
+   cover shot does not push the ingredients onto page two. */
+@media print {
+  @page {
+    margin: 15mm;
+  }
+  body {
+    background: white;
+    color: black;
+  }
+  header,
+  nav {
+    display: none !important;
+  }
+  main {
+    padding: 0 !important;
+    max-width: none !important;
+  }
+  [data-slot='card'] {
+    border: 0;
+    box-shadow: none;
+    padding-inline: 0;
+    break-inside: avoid;
+  }
+  a {
+    color: inherit;
+    text-decoration: none;
+  }
+  .print-photos img {
+    max-height: 60mm;
+  }
+}

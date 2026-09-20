@@ -75,10 +75,69 @@ section and know what to update.
   open. Nothing is cached that was written, and no photo is. A network failure
   at start-up no longer signs you out.
 
+### Sharing, export, import
+
+- Shared means public. The share switch on a recipe has one meaning: every
+  account on the instance can read and log it, and so can anyone holding its
+  link, signed in or not, at `/r/{id}`, photos included. The recipe's own id
+  is the link; turning the switch off takes the page and its photos away, and
+  turning it back on restores the same address. A "Copy link" button appears
+  wherever a shared recipe is shown, and the public page is the same read
+  view the signed-in page uses, with a print stylesheet.
+- A recipe exports as JSON in the seed-repository shape — no internal ids,
+  foods by the same name-and-brand key `GET /foods/export` uses, sub-recipes
+  inlined by name, free text kept as text — or as a Markdown recipe card with
+  the method numbered exactly as the page numbers it and the nutrition per
+  serving.
+- Import a recipe from a URL. The page's schema.org `Recipe` block is read
+  (bare, in a `@graph`, or behind a page node; instructions as text, steps
+  or sections); each ingredient line is parsed for its amount, unit and name
+  — fractions, ranges, "1 1/2 cups", "½", "1 can (400 g)" — with mass units
+  turned into grams and household measures left as they are, since a cup of
+  flour and a cup of oil do not weigh the same. Each line is searched for in
+  the food database and the review pre-selects a match only when the search
+  found the food by name; looser matches are offered, and anything
+  unresolved stays as a free-text ingredient. The result lands in the
+  ordinary recipe form, still unsaved. Only public web addresses are
+  fetched: private, loopback and link-local addresses are refused after DNS
+  resolution and before a connection is opened, and a redirect to one is
+  refused the same way.
+- Account export and import, under Settings → Account. One JSON document
+  with everything the account owns — profile without secrets, targets,
+  reminders, own foods and the foods its recipes and diary use, recipes,
+  diary, weigh-ins, photo metadata — or a zip of `diary.csv` and
+  `weights.csv` for a spreadsheet. Importing merges by natural identity:
+  foods by name and brand, recipes by name, diary entries by date, meal and
+  what was eaten, weigh-ins by date. Nothing is duplicated, a food the
+  instance already has is left as it is, a food it lacks keeps its line as
+  text and is named in the report, and the same file imported twice changes
+  nothing.
+
 ### API changes
 
 Additive:
 
+- `GET /public/recipes/{id}` and `GET /public/photos/{id}`, both without
+  authentication: a shared recipe (the `Recipe` shape plus `photos`, whose
+  URLs point at the public photo route) and a photo of one. 404 for anything
+  not shared, including for its owner — the routes take no token.
+- `GET /recipes/{id}/export?format=json|markdown` for a recipe you own or one
+  that is shared. JSON is `{ format, generated_at, recipe }` with foods named
+  by `{ key, name, brand, variant_label }` and sub-recipes inlined; Markdown
+  is served as `text/markdown`.
+- `POST /recipes/import { url }`, returning a `RecipeDraft` and writing
+  nothing: `name`, `description`, `servings`, `instructions`, `source_url`,
+  `image_url`, `author`, and `lines[]` each with the line as written, its
+  parsed `quantity`, `unit`, `name` and `grams`, and `candidates[]` from the
+  food database with the search `tier` that found each. A private or
+  non-http address is a 400; a page that could not be fetched is a 502.
+- `GET /account/export` (`?format=csv` for the zip) and
+  `POST /account/import`, which takes the same document, merges it and
+  returns `{ profile_updated, targets, reminders, foods, recipes, diary,
+  weights, notes }` with `{ created, updated, skipped }` per kind. A
+  `format` newer than the server reads is a 400 before anything is touched.
+- `RecipeItem.variant_label` on every recipe item: the preparation variant
+  of the food, when it is one, and null otherwise.
 - `Food.portions` (`[{ id, label, grams, source }]`) on every food a response
   carries — lists, search results, details, variants and parents.
   `POST /foods/{id}/portions { label, grams }` and

@@ -23,7 +23,9 @@ Rust (Axum) API + Postgres + React SPA, all behind one `docker compose up`.
 | **Enter what the label says** | A manually added food is typed per serving, the way the packet prints it, and converted server-side. Imports stay per 100 g, because that is how USDA and Open Food Facts publish |
 | **Add a food anywhere** | Create one from the Foods page, or inline while logging a meal or building a recipe — a search that found nothing offers to create what you typed |
 | **Instant search** | Streams results over SSE as you type, tier by tier, and tolerates typos — "chikn brest" finds chicken breast |
-| **Recipe sharing** | Private by default; mark one public and everyone can read and log it, while only you can change it. Unlike foods, a recipe is yours |
+| **Recipe sharing** | Private by default; share one and everyone can read and log it — every account, and anyone holding its link at `/r/{id}` without signing in. Only you can change it, and un-sharing takes the link away. Unlike foods, a recipe is yours |
+| **Recipe export and import** | Save a recipe as JSON with no internal ids in it, or as a Markdown card; print the read view. Import one from a URL: the page's schema.org recipe is read, each ingredient line is parsed and matched against the food database for you to confirm, and what cannot be matched stays as words |
+| **Account export and import** | Everything you own as one JSON file — no password, no keys — or a zip of CSVs for a spreadsheet. Importing merges by name and date rather than restoring, so nothing is duplicated and the same file twice changes nothing |
 | **Barcode lookup** | Type or scan a UPC/EAN and import the product in one click |
 | **Photos** | Attach photos to a weigh-in (private) or a recipe (shared with the recipe). Downscaled and re-encoded on upload, which strips EXIF — phone photos carry GPS |
 | **Reminders** | "It's been three weeks since your last weigh-in", at a cadence you set |
@@ -33,7 +35,7 @@ Rust (Axum) API + Postgres + React SPA, all behind one `docker compose up`.
 | **Accounts** | Email + password sign-up, Argon2id hashing, closable once your accounts exist |
 | **Administration** | The first account owns the instance: promote, suspend and survey accounts, close sign-ups once everyone is in, and remove a food outright |
 | **API keys** | Per-user, scoped read or read-write, revocable, for scripts and dashboards |
-| **Export** | `GET /foods/export` dumps the whole food database keyed by natural identity, ready to commit to a repository |
+| **Food export** | `GET /foods/export` dumps the whole food database keyed by natural identity, ready to commit to a repository |
 | **OpenAPI 3.1** | Generated from the handlers, served at `/api/v1/openapi.json` |
 | **MCP** | Served by the API at `/mcp`, behind the same keys. Every endpoint is a tool, generated from the OpenAPI document, plus `log_food`, `today`, `progress` and `add_recipe_from_text` — see **MCP** under API |
 
@@ -374,6 +376,40 @@ barcode is pure duplication. A recipe is authorship: yours until you share it.
 Editing follows creation in both cases: anyone can *use* a food, only its author
 can change it.
 
+**Shared means public.** One switch on a recipe, with one meaning: every
+account on the instance can read it, and so can anyone holding its link without
+signing in. There is no separate share token to mint, list or revoke — the
+recipe's own id is the link, and the switch is the revocation. The public route
+and the signed-in one are the same assembly function called with no viewer, and
+a photo's visibility is one SQL rule (`owner = viewer OR recipe.is_public`)
+applied to the bytes as well as the listings, so with no viewer a weigh-in photo
+can never satisfy it and a recipe photo satisfies it exactly while its recipe is
+shared. One rule in one place, rather than a public copy that could drift.
+
+**Exports carry no internal ids.** A recipe or account export names a food by
+`lower(name)|lower(brand)` — the key `GET /foods/export` already uses — a
+sub-recipe by inlining it, and a diary entry by its date, meal and what was
+eaten. That is what makes the account import a *merge*: the same file can be
+read into the account it came from, into a fresh account on another instance,
+or twice, and each record is created once, updated when the file differs, and
+otherwise counted as skipped. Foods are the exception in one direction: an
+import adds a food the instance lacks and never overwrites one it has, because
+the instance may have corrected it since and a personal file is not the place
+to undo that. A food that is missing keeps its recipe line as text and is named
+in the report, so a recipe is never silently short an ingredient.
+
+**Importing a page is request forgery territory.** `POST /recipes/import` makes
+the server fetch a URL the caller chose, and the server sits inside the
+deployment's network. So the host is resolved first and every address it
+resolves to has to be globally routable — loopback, private ranges, link-local
+(where cloud metadata services live), carrier-grade NAT, IPv4 embedded in IPv6
+and the rest are refused before a connection is opened — and the request is
+pinned to those addresses so a name that resolves differently a moment later
+cannot reach a different one. Redirects are not followed by the client; each
+hop comes back through the same checks, at most four. Only http and https, no
+credentials in the URL, only a page or JSON in reply, read against a size cap
+under one timeout.
+
 **Search streams instead of ranking once.** Logging a meal is the hottest path,
 and a single ranked query is slow twice over — an exact hit waits behind a
 trigram scan, and a typo returns nothing. So the search runs as progressively
@@ -557,6 +593,13 @@ GET    /admin/settings           PUT    /admin/settings         # quorum, sign-u
 GET    /recipes                  POST   /recipes    # items are a food in grams
                                                      # or a recipe in servings
 GET    /recipes/{id}             PUT    /recipes/{id}           DELETE /recipes/{id}
+GET    /recipes/{id}/export              # ?format=json|markdown; no internal ids
+POST   /recipes/import                   # { url }: a draft read off the page, nothing saved
+GET    /public/recipes/{id}              # a shared recipe, no token; its photos at
+GET    /public/photos/{id}               # this route, and nowhere else without one
+
+GET    /account/export                   # everything the account owns; ?format=csv zips diary and weights
+POST   /account/import                   # merge an export back in by natural identity
 
 GET    /diary                    POST   /diary
 GET    /diary/day                        # one day, grouped by meal, vs targets

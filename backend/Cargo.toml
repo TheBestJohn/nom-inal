@@ -54,6 +54,16 @@ validator = { version = "0.19", features = ["derive"] }
 
 utoipa = { version = "5", features = ["axum_extras", "chrono", "uuid"] }
 
+# Recipe import from a URL. `url` parses what the caller sent before anything
+# is resolved or fetched; `regex` carries the ingredient-line and method-step
+# grammar that the frontend already had in JavaScript, ported here so both
+# split the same text the same way.
+url = "2"
+regex = "1"
+# The CSV form of the account export is two files, so it travels as one zip.
+# Deflate only: nothing else in the archive is worth a second compressor.
+zip = { version = "5", default-features = false, features = ["deflate"] }
+
 # MCP over Streamable HTTP, served at /mcp by this same process. Tools are
 # assembled from the OpenAPI registry at startup rather than declared with the
 # macros, so only the server and transport features are needed.

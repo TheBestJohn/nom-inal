@@ -385,6 +385,8 @@ export interface RecipeItem {
   label: string | null
   name: string
   brand: string | null
+  /** For a food that is a preparation variant: "cooked", "drained". */
+  variant_label: string | null
   quantity_g: number | null
   servings: number | null
   /** Grams for a food; for a sub-recipe, the weight of the servings taken. */
@@ -433,6 +435,69 @@ export interface Recipe {
   per_serving: Nutrients
   created_at: string
   updated_at: string
+}
+
+/**
+ * A shared recipe as anyone holding the link sees it, no token needed. The
+ * photo URLs point at the public photo route, which serves a photo only
+ * while its recipe is shared.
+ */
+export type PublicRecipe = Recipe & { photos: Photo[] }
+
+/** A food the importer thinks an ingredient line might mean. */
+export interface DraftCandidate {
+  food_id: string
+  name: string
+  brand: string | null
+  serving_size_g: number
+  /** Per 100 g. */
+  calories_kcal: number
+  protein_g: number
+  carbs_g: number
+  fat_g: number
+  /** How it was found. Only `exact` and `prefix` are tight enough to pre-select. */
+  tier: 'exact' | 'prefix' | 'contains' | 'fuzzy' | string
+}
+
+/** One ingredient line off an imported page, as written and as read. */
+export interface DraftLine {
+  text: string
+  quantity: number | null
+  unit: string | null
+  name: string
+  /** Set when the line said a mass; null for a cup, a clove, a large. */
+  grams: number | null
+  candidates: DraftCandidate[]
+}
+
+/** What `POST /recipes/import` hands back. Nothing is saved yet. */
+export interface RecipeDraft {
+  name: string
+  description: string | null
+  servings: number | null
+  instructions: string | null
+  lines: DraftLine[]
+  source_url: string
+  image_url: string | null
+  author: string | null
+}
+
+export interface MergeCount {
+  created: number
+  updated: number
+  skipped: number
+}
+
+/** What an account import did, and everything it could not do as asked. */
+export interface ImportReport {
+  profile_updated: boolean
+  targets: MergeCount
+  reminders: MergeCount
+  foods: MergeCount
+  recipes: MergeCount
+  diary: MergeCount
+  weights: MergeCount
+  notes: string[]
 }
 
 export interface DiaryEntry {

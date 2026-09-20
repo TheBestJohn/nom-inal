@@ -152,6 +152,41 @@ pub async fn stream_foods(
     Sse::new(stream).keep_alive(KeepAlive::default())
 }
 
+/// The same tiered search, collected rather than streamed, for a caller that
+/// wants the best few matches for a term in one go — the recipe importer
+/// resolving an ingredient line. Each food comes with the tier that found
+/// it, tightest first, deduplicated exactly as the stream is.
+pub async fn candidates(
+    state: &AppState,
+    term: &str,
+    limit: usize,
+) -> Result<Vec<(&'static str, Food)>, sqlx::Error> {
+    let term = term.trim();
+    let mut out: Vec<(&'static str, Food)> = Vec::new();
+    if term.is_empty() || limit == 0 {
+        return Ok(out);
+    }
+    let mut seen: HashSet<Uuid> = HashSet::new();
+    let mut seen_content: HashSet<String> = HashSet::new();
+
+    for (tier, sql) in tiers(term) {
+        let rows: Vec<Food> = sqlx::query_as(sql)
+            .bind(term)
+            .bind(limit as i64)
+            .fetch_all(&state.db)
+            .await?;
+        for food in rows {
+            if seen.insert(food.id) && seen_content.insert(content_key(&food)) {
+                out.push((tier, food));
+                if out.len() >= limit {
+                    return Ok(out);
+                }
+            }
+        }
+    }
+    Ok(out)
+}
+
 /// Identity of a food for duplicate-collapsing: what it is, and what it is
 /// made of. Nutrients are rounded so figures that differ only in float noise
 /// still collapse.

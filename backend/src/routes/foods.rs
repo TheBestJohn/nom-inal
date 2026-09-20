@@ -40,7 +40,7 @@ pub fn router() -> Router<AppState> {
         )
 }
 
-use crate::domain::food::FOOD_COLUMNS as COLUMNS;
+use crate::domain::food::{FOOD_COLUMNS as COLUMNS, FOOD_KEY_SQL};
 
 /// The same list for the two statements that alias `foods` as `f`.
 const F_COLUMNS: &str = food_columns!("f");
@@ -50,7 +50,7 @@ const F_COLUMNS: &str = food_columns!("f");
 /// The settings are transaction-local, so they have to be set inside an
 /// explicit transaction: a bare statement on a pooled connection is its own
 /// transaction and the value would be discarded before the trigger ran.
-async fn authored_tx(
+pub async fn authored_tx(
     state: &AppState,
     actor: Uuid,
     change_kind: &str,
@@ -1288,14 +1288,14 @@ pub async fn export(
     // deployment from it. So it deliberately carries no internal ids and no
     // per-user data — a variant points at its parent by the same natural key
     // any other instance would compute.
-    let rows: Vec<FoodExport> = sqlx::query_as(
+    let rows: Vec<FoodExport> = sqlx::query_as(&format!(
         "SELECT
              f.source, f.source_id, f.name, f.brand, f.upc,
              f.calories_kcal, f.protein_g, f.carbs_g, f.fat_g, f.fiber_g, f.sugar_g,
              f.saturated_fat_g, f.sodium_mg, f.serving_size_g, f.serving_label,
              f.nutrient_basis,
              CASE WHEN f.variant_of IS NULL THEN NULL
-                  ELSE lower(btrim(p.name)) || '|' || lower(btrim(coalesce(p.brand, '')))
+                  ELSE {parent_key}
              END AS variant_of_key,
              f.variant_label,
              f.revision,
@@ -1314,7 +1314,9 @@ pub async fn export(
          -- Parents before their variants, so an importer reading the file in
          -- order can always resolve `variant_of_key`.
          ORDER BY (f.variant_of IS NOT NULL), lower(f.name), lower(coalesce(f.brand, ''))",
-    )
+        // The parent's key is the same expression, over the parent row.
+        parent_key = FOOD_KEY_SQL.replace("f.", "p."),
+    ))
     .bind(q.verified_only)
     .fetch_all(&state.db)
     .await?;

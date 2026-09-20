@@ -91,6 +91,42 @@ function safeParse(text: string): unknown {
 }
 
 /**
+ * Fetch an authenticated file and hand it to the browser as a download.
+ *
+ * A plain `<a download>` sends no Authorization header, so an export has to
+ * be fetched here and offered through an object URL. The URL is revoked once
+ * the click has been dispatched; the browser keeps its own reference for the
+ * length of the save.
+ */
+export async function downloadFile(path: string, filename: string): Promise<void> {
+  const token = tokenStore.get()
+  const response = await fetch(path, {
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+  })
+  if (response.status === 401) {
+    tokenStore.clear()
+    window.dispatchEvent(new CustomEvent(UNAUTHORIZED_EVENT))
+    throw new ApiError(401, 'unauthorized', 'Your session has expired.')
+  }
+  if (!response.ok) {
+    const payload = safeParse(await response.text()) as { message?: string } | null
+    throw new ApiError(
+      response.status,
+      'error',
+      payload?.message ?? `Download failed (${response.status})`,
+    )
+  }
+  const url = URL.createObjectURL(await response.blob())
+  const anchor = document.createElement('a')
+  anchor.href = url
+  anchor.download = filename
+  document.body.appendChild(anchor)
+  anchor.click()
+  anchor.remove()
+  setTimeout(() => URL.revokeObjectURL(url), 10_000)
+}
+
+/**
  * Fetch an authenticated image and hand back an object URL.
  *
  * Photos are served by the API rather than as static files so ownership is

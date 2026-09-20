@@ -36,7 +36,7 @@ const MEALS: [&str; 4] = ["breakfast", "lunch", "dinner", "snack"];
 ///   * food entries  -> the food's per-100g figures
 ///   * recipe entries-> the recipe's per-ONE-SERVING figures, aggregated in the
 ///     lateral join, so both cases reduce to a single multiply in Rust.
-const ENTRY_SELECT: &str = r#"
+pub const ENTRY_SELECT: &str = r#"
     SELECT d.id, d.logged_on, d.meal, d.food_id, d.recipe_id, d.quantity_g, d.recipe_servings,
            d.created_at, d.updated_at,
            f.name AS food_name, f.brand AS food_brand, r.name AS recipe_name,
