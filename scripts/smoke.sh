@@ -950,6 +950,16 @@ expect "and so does og:title" \
   "$(echo "$PAGE" | grep -c "property=\"og:title\" content=\"Crème Brûlée $STAMP\"")" "1"
 expect "og:image points at this recipe's card" \
   "$(echo "$PAGE" | grep -c "property=\"og:image\" content=\"[^\"]*/public/recipes/$SLUG/preview.png\"")" "1"
+
+# The absolute URLs in those tags are built from the address the page was
+# reached at, port included. nginx's $host drops the port, which on the
+# default compose port (8088) pointed every preview image at nothing; the
+# proxy forwards $http_host for that reason and this is what says so.
+PORTED=$(curl -fsS -H "Host: share.example:8443" "$ROOT/r/$SLUG")
+expect "a non-default port survives into og:url" \
+  "$(echo "$PORTED" | grep -c "property=\"og:url\" content=\"http://share.example:8443/r/$SLUG\"")" "1"
+expect "and into the card's address" \
+  "$(echo "$PORTED" | grep -c "property=\"og:image\" content=\"http://share.example:8443/")" "1"
 # The structured data is the same shape this application's own importer reads
 # off other people's recipe sites, so a shared recipe can be imported back.
 LD=$(echo "$PAGE" | sed -n 's|.*<script type="application/ld+json">\(.*\)</script>.*|\1|p')
