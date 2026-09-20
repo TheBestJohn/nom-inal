@@ -87,9 +87,11 @@ phase ends in a tagged release.
 
 ## Phase 4 — Sharing, export, import
 
-- **Share link per recipe**: tokenised, read-only, no login, photos
-  included, revocable. Separate from `is_public`, which means "everyone on
-  this instance".
+- **Shared means public.** One switch, one meaning: a shared recipe is
+  visible to every account on the instance *and* reachable at a public
+  read-only URL without signing in, photos included. Un-sharing takes both
+  away. No separate share tokens: the recipe's own id is the link, and
+  revoking it is the switch.
 - **Recipe export** as JSON (the seed-repo format), Markdown, and a print
   stylesheet.
 - **Import a recipe from a URL** via schema.org JSON-LD; ingredient lines
