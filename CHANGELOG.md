@@ -19,8 +19,10 @@ section and know what to update.
 - A recipe with a photo gets the same lines, captioned over the foot of the
   photo. It previously carried no text at all, so a shared link was a picture
   of dinner and nothing else. The photo is darkened under the text — sized to
-  the text rather than to the card, so the top line lands on a dark floor
-  instead of on whatever the photograph happens to be.
+  the text rather than to the card, so the top line lands on a settled floor
+  instead of on whatever the photograph happens to be. Each letter also
+  carries a dark edge, which is what makes it legible wherever it falls — so
+  the darkening can stay light enough to still show the food.
 
 ### Amounts people actually use
 

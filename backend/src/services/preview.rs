@@ -52,13 +52,21 @@ const MACRO_GAP: f32 = 14.0;
 const PHOTO_NAME_SIZE: f32 = 54.0;
 const PHOTO_NAME_LEADING: f32 = 66.0;
 const PHOTO_NAME_MAX_LINES: usize = 2;
-/// How dark the foot of a photo is taken, under the text.
-const SCRIM_MAX: f32 = 0.82;
+/// How dark the foot of a photo is taken, under the text. Gentle, because
+/// the outline around each letter is what makes the caption legible; this
+/// only settles the area down so the text does not sit on a busy highlight.
+const SCRIM_MAX: f32 = 0.42;
 /// Clear air between the top of the text and where the darkening stops being
 /// solid, so no ascender pokes out of its floor.
 const SCRIM_PAD: f32 = 18.0;
 /// The band above that, over which the darkening fades away to nothing.
 const SCRIM_FADE: f32 = 150.0;
+/// Outline thickness as a fraction of the type size, so the edge stays in
+/// proportion whether it is around the name or the figures.
+const OUTLINE_DIVISOR: f32 = 16.0;
+/// What the outline is drawn in: near-black, not pure, which reads as a
+/// shadow rather than as a sticker.
+const OUTLINE: Rgb<u8> = Rgb([0x10, 0x14, 0x12]);
 /// Plain white over a photo: the dimmed green reads as a colour cast when the
 /// thing behind it is a photograph rather than the theme's green.
 const ON_PHOTO: Rgb<u8> = Rgb([0xff, 0xff, 0xff]);
@@ -146,11 +154,10 @@ fn caption(canvas: &mut RgbImage, card: &Card) -> Result<(), ApiError> {
         draw_text(
             canvas,
             &font,
-            PHOTO_NAME_SIZE,
+            Style::outlined(PHOTO_NAME_SIZE, ON_PHOTO),
             MARGIN,
             baseline,
             line,
-            ON_PHOTO,
         );
         baseline += PHOTO_NAME_LEADING;
     }
@@ -162,7 +169,14 @@ fn caption(canvas: &mut RgbImage, card: &Card) -> Result<(), ApiError> {
         let line = wrap_lines(&text, 1, usable, &|t| text_width(&sub_scale, t))
             .pop()
             .unwrap_or_default();
-        draw_text(canvas, &font, SUB_SIZE, MARGIN, at, &line, ON_PHOTO);
+        draw_text(
+            canvas,
+            &font,
+            Style::outlined(SUB_SIZE, ON_PHOTO),
+            MARGIN,
+            at,
+            &line,
+        );
     }
 
     Ok(())
@@ -229,11 +243,10 @@ pub fn generated(card: &Card) -> Result<Vec<u8>, ApiError> {
         draw_text(
             &mut canvas,
             &font,
-            NAME_SIZE,
+            Style::plain(NAME_SIZE, ON_GREEN),
             MARGIN,
             baseline,
             line,
-            ON_GREEN,
         );
         baseline += NAME_LEADING;
     }
@@ -250,11 +263,10 @@ pub fn generated(card: &Card) -> Result<Vec<u8>, ApiError> {
     draw_text(
         &mut canvas,
         &font,
-        SUB_SIZE,
+        Style::plain(SUB_SIZE, DIM),
         MARGIN,
         sub_baseline,
         &subtitle,
-        DIM,
     );
 
     // What is in a serving, under what a serving is. A preview that gives a
@@ -266,21 +278,19 @@ pub fn generated(card: &Card) -> Result<Vec<u8>, ApiError> {
     draw_text(
         &mut canvas,
         &font,
-        SUB_SIZE,
+        Style::plain(SUB_SIZE, DIM),
         MARGIN,
         sub_baseline + MACRO_GAP + SUB_SIZE,
         &macros,
-        DIM,
     );
 
     draw_text(
         &mut canvas,
         &font,
-        MARK_SIZE,
+        Style::plain(MARK_SIZE, DIM),
         MARGIN,
         HEIGHT as f32 - MARGIN,
         "nom-inal",
-        DIM,
     );
 
     encode(&canvas)
@@ -393,14 +403,18 @@ fn ellipsise(text: &str, max_width: f32, width_of: &dyn Fn(&str) -> f32) -> Stri
     }
 }
 
-fn draw_text(
-    canvas: &mut RgbImage,
+/// Walk a line of text, handing every covered pixel and its coverage to `f`.
+///
+/// Shared by the plain and the outlined draw so the two cannot disagree about
+/// where a glyph sits: an outline offset by a kerning rule the fill does not
+/// use would show as a shadow down one side of the word.
+fn for_each_glyph_pixel(
     font: &FontRef<'_>,
     size: f32,
     x: f32,
     baseline: f32,
     text: &str,
-    colour: Rgb<u8>,
+    f: &mut impl FnMut(i32, i32, f32),
 ) {
     let scaled = font.as_scaled(PxScale::from(size));
     let mut caret = x;
@@ -420,14 +434,171 @@ fn draw_text(
         };
         let bounds = outlined.px_bounds();
         outlined.draw(|gx, gy, coverage| {
-            let px = bounds.min.x as i32 + gx as i32;
-            let py = bounds.min.y as i32 + gy as i32;
-            if px < 0 || py < 0 || px >= WIDTH as i32 || py >= HEIGHT as i32 {
-                return;
-            }
-            let under = *canvas.get_pixel(px as u32, py as u32);
-            canvas.put_pixel(px as u32, py as u32, blend(under, colour, coverage));
+            f(
+                bounds.min.x as i32 + gx as i32,
+                bounds.min.y as i32 + gy as i32,
+                coverage,
+            );
         });
+    }
+}
+
+/// How a line of text is drawn: its size, its colour, and whether it carries
+/// an edge. Together rather than as loose arguments, so a call site cannot
+/// pair the name's size with the figures' colour.
+#[derive(Clone, Copy)]
+struct Style {
+    size: f32,
+    fill: Rgb<u8>,
+    /// Set over a photograph, where contrast cannot be assumed.
+    edge: Option<Rgb<u8>>,
+}
+
+impl Style {
+    fn plain(size: f32, fill: Rgb<u8>) -> Self {
+        Self {
+            size,
+            fill,
+            edge: None,
+        }
+    }
+
+    fn outlined(size: f32, fill: Rgb<u8>) -> Self {
+        Self {
+            size,
+            fill,
+            edge: Some(OUTLINE),
+        }
+    }
+}
+
+fn draw_text(
+    canvas: &mut RgbImage,
+    font: &FontRef<'_>,
+    style: Style,
+    x: f32,
+    baseline: f32,
+    text: &str,
+) {
+    if style.edge.is_some() {
+        draw_text_outlined(canvas, font, style, x, baseline, text);
+        return;
+    }
+    let (size, colour) = (style.size, style.fill);
+    for_each_glyph_pixel(font, size, x, baseline, text, &mut |px, py, coverage| {
+        if px < 0 || py < 0 || px >= WIDTH as i32 || py >= HEIGHT as i32 {
+            return;
+        }
+        let under = *canvas.get_pixel(px as u32, py as u32);
+        canvas.put_pixel(px as u32, py as u32, blend(under, colour, coverage));
+    });
+}
+
+/// The same text with a dark edge drawn around it.
+///
+/// Over a photograph, contrast cannot be assumed: a white word crossing from
+/// a shadow onto a highlight is legible for half its length. An outline gives
+/// every letter its own contrast, whatever it happens to be lying on, which
+/// is what lets the darkening underneath be gentle enough to still show the
+/// food.
+///
+/// The edge is the glyph coverage grown by `radius` — a dilation — rather
+/// than the word stamped at offsets around itself. Stamping leaves the
+/// corners thin and the overlaps dense, and at these sizes that reads as a
+/// bad drop shadow.
+fn draw_text_outlined(
+    canvas: &mut RgbImage,
+    font: &FontRef<'_>,
+    style: Style,
+    x: f32,
+    baseline: f32,
+    text: &str,
+) {
+    let (size, fill) = (style.size, style.fill);
+    let edge = style.edge.unwrap_or(OUTLINE);
+    let radius = (size / OUTLINE_DIVISOR).round().max(2.0) as i32;
+
+    let mut marks: Vec<(i32, i32, f32)> = Vec::new();
+    for_each_glyph_pixel(font, size, x, baseline, text, &mut |px, py, coverage| {
+        marks.push((px, py, coverage));
+    });
+    let Some(&(first_x, first_y, _)) = marks.first() else {
+        return;
+    };
+
+    let (mut min_x, mut min_y, mut max_x, mut max_y) = (first_x, first_y, first_x, first_y);
+    for &(px, py, _) in &marks {
+        min_x = min_x.min(px);
+        min_y = min_y.min(py);
+        max_x = max_x.max(px);
+        max_y = max_y.max(py);
+    }
+    // Room for the edge to grow into.
+    min_x -= radius;
+    min_y -= radius;
+    max_x += radius;
+    max_y += radius;
+
+    let w = (max_x - min_x + 1) as usize;
+    let h = (max_y - min_y + 1) as usize;
+    let mut cover = vec![0f32; w * h];
+    for &(px, py, coverage) in &marks {
+        let i = (py - min_y) as usize * w + (px - min_x) as usize;
+        cover[i] = cover[i].max(coverage);
+    }
+
+    // Grow it. A square max-filter, done as two one-dimensional passes: the
+    // same result as testing every pixel in the neighbourhood, at 2r work per
+    // pixel instead of r squared. At three pixels the difference between a
+    // square and a disc is not visible; the difference in time is.
+    let mut wide = vec![0f32; w * h];
+    for y in 0..h {
+        for x in 0..w {
+            let lo = x.saturating_sub(radius as usize);
+            let hi = (x + radius as usize).min(w - 1);
+            let mut best = 0f32;
+            for sx in lo..=hi {
+                best = best.max(cover[y * w + sx]);
+            }
+            wide[y * w + x] = best;
+        }
+    }
+    let mut grown = vec![0f32; w * h];
+    for y in 0..h {
+        let lo = y.saturating_sub(radius as usize);
+        let hi = (y + radius as usize).min(h - 1);
+        for x in 0..w {
+            let mut best = 0f32;
+            for (sy, _) in (lo..=hi).enumerate() {
+                best = best.max(wide[(lo + sy) * w + x]);
+            }
+            grown[y * w + x] = best;
+        }
+    }
+
+    let mut put = |x: usize, y: usize, colour: Rgb<u8>, alpha: f32| {
+        if alpha <= 0.0 {
+            return;
+        }
+        let (px, py) = (min_x + x as i32, min_y + y as i32);
+        if px < 0 || py < 0 || px >= WIDTH as i32 || py >= HEIGHT as i32 {
+            return;
+        }
+        let under = *canvas.get_pixel(px as u32, py as u32);
+        canvas.put_pixel(px as u32, py as u32, blend(under, colour, alpha));
+    };
+
+    // The edge first, then the letter over it: where the letter is solid the
+    // edge is invisible anyway, and this keeps the fill's own antialiasing.
+    for y in 0..h {
+        for x in 0..w {
+            put(x, y, edge, grown[y * w + x]);
+        }
+    }
+    for y in 0..h {
+        for x in 0..w {
+            put(x, y, fill, cover[y * w + x]);
+        }
     }
 }
 
@@ -581,14 +752,15 @@ mod tests {
         assert_eq!((decoded.width(), decoded.height()), (WIDTH, HEIGHT));
     }
 
-    /// The caption is only readable because the photo under it was darkened,
-    /// and the line that matters is the top one — a gradient sized to the
-    /// card rather than to the text left it on bare photo, which on a bright
-    /// picture is white on near-white. Measured, because it is invisible in
-    /// every assertion that only counts pixels.
+    /// Over a photograph the caption carries its own contrast: each letter is
+    /// drawn with a dark edge around it, which is what lets the darkening
+    /// underneath stay light enough to still show the food.
+    ///
+    /// Tested on a near-white photo, where the gentle scrim alone could not
+    /// produce a dark pixel: 235 taken down by `SCRIM_MAX` is still about
+    /// 136, so anything darker than that is the outline and nothing else.
     #[test]
-    fn every_caption_line_sits_on_a_darkened_floor() {
-        // Uniform near-white, so anything dark in the result is this code's.
+    fn a_caption_over_a_photo_is_outlined() {
         let flat = image::RgbImage::from_pixel(1200, 630, Rgb([235, 235, 235]));
         let mut source = Vec::new();
         image::DynamicImage::ImageRgb8(flat)
@@ -601,32 +773,55 @@ mod tests {
         let image = image::load_from_memory(&from_photo(&source, &sample()).unwrap())
             .unwrap()
             .to_rgb8();
-        // The darkest the floor gets, sampled between the glyphs.
-        let floor = |y: u32| -> u8 {
-            (0..WIDTH)
-                .map(|x| image.get_pixel(x, y).0[0])
-                .min()
-                .unwrap_or(255)
-        };
 
         assert!(
             image.get_pixel(5, 5).0[0] > 200,
             "the top must be untouched"
         );
-        // Every row the text occupies, from the first name line to the foot.
-        for y in (HEIGHT - 230)..HEIGHT {
-            assert!(
-                floor(y) < 90,
-                "row {y} is only darkened to {}, text there is unreadable",
-                floor(y)
-            );
-        }
 
+        let band = |p: &(u32, u32, &Rgb<u8>)| p.1 > HEIGHT - 240;
+        let dark = image
+            .enumerate_pixels()
+            .filter(|p| band(p) && p.2 .0[0] < 80)
+            .count();
         let light = image
             .enumerate_pixels()
-            .filter(|(_, y, p)| *y > HEIGHT - 230 && p.0[0] > 200)
+            .filter(|p| band(p) && p.2 .0[0] > 220)
             .count();
-        assert!(light > 2_000, "only {light} light pixels: no caption drawn");
+        assert!(
+            dark > 3_000,
+            "only {dark} dark pixels: the letters have no edge, so white text \
+             on a pale photo would be invisible"
+        );
+        assert!(light > 3_000, "only {light} light pixels: no caption drawn");
+    }
+
+    /// The gentle scrim still has to be gentle: burying the photograph is the
+    /// failure this outline exists to avoid.
+    #[test]
+    fn the_photo_is_still_visible_under_the_caption() {
+        let flat = image::RgbImage::from_pixel(1200, 630, Rgb([200, 120, 60]));
+        let mut source = Vec::new();
+        image::DynamicImage::ImageRgb8(flat)
+            .write_to(
+                &mut std::io::Cursor::new(&mut source),
+                image::ImageFormat::Png,
+            )
+            .unwrap();
+
+        let image = image::load_from_memory(&from_photo(&source, &sample()).unwrap())
+            .unwrap()
+            .to_rgb8();
+        // A row between the lines of type, at the very foot of the card.
+        let row: u32 = HEIGHT - 8;
+        let mean: f32 = (0..WIDTH)
+            .map(|x| image.get_pixel(x, row).0[0] as f32)
+            .sum::<f32>()
+            / WIDTH as f32;
+        assert!(
+            mean > 90.0,
+            "the foot averages {mean}, which is too dark to see the food through"
+        );
     }
 
     #[test]
