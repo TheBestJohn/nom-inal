@@ -17,6 +17,7 @@ use uuid::Uuid;
 
 use super::dispatch::{ApiResponse, Credential, Dispatcher};
 use crate::auth::CurrentUser;
+use crate::domain::measure;
 
 /// A composite tool's description for `tools/list`.
 pub struct CompositeTool {
@@ -29,12 +30,15 @@ pub struct CompositeTool {
 pub const TOOLS: &[CompositeTool] = &[
     CompositeTool {
         name: "log_food",
-        description: "Log what someone ate, in their words: \"2 eggs\", \"150 g chicken breast\", \
-            \"a banana and 30g oats\". Finds the food in the database, works out the grams (a count \
-            is multiplied by the food's serving size; an explicit weight is used as given) and \
-            returns what WOULD be logged with its calories. Nothing is written unless `confirm` is \
-            true, and a match that was only fuzzy is never written without a `food_id` from an \
-            earlier confirmation payload. Needs a key with the write scope.",
+        description: "Log what someone ate, in their words: \"2 chicken breasts\", \"2 eggs\", \
+            \"150 g chicken breast\", \"a banana and 30g oats\". Finds the food in the database and \
+            works out the grams: an explicit weight is used as given, and a count is matched \
+            against that food's household measures — \"2 breasts\" is 2 × its \"1 breast\" portion — \
+            falling back to its serving size when none of them fits. The entry keeps the words as \
+            well as the grams, so the diary says \"2 chicken breasts\". Returns what WOULD be logged \
+            with its calories; nothing is written unless `confirm` is true, and a match that was \
+            only fuzzy is never written without a `food_id` from an earlier confirmation payload. \
+            Needs a key with the write scope.",
         writes: true,
         input_schema: log_food_schema,
     },
@@ -231,6 +235,17 @@ pub enum Amount {
     /// interpreted, because the food's serving size is the only portion the
     /// database knows.
     Count { n: f64, unit: Option<String> },
+}
+
+impl Amount {
+    /// How many of whatever it is. A weight is one of itself, which is what
+    /// makes it safe to ask this of any amount.
+    fn count(&self) -> f64 {
+        match self {
+            Amount::Grams(_) => 1.0,
+            Amount::Count { n, .. } => *n,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -482,26 +497,12 @@ async fn search(ctx: &Ctx<'_>, query: &str) -> Result<Vec<Candidate>, ToolError>
 
 /// The singular of the last word, when English gives one: "eggs" → "egg",
 /// "berries" → "berry", "tomatoes" → "tomato". `None` when nothing changes.
+///
+/// One rule, in `domain::measure` beside the plural it undoes — the search
+/// uses it to find "Egg" from "2 eggs", and the same function is what lets a
+/// portion labelled "1 breast" be recognised in "2 chicken breasts".
 pub fn singularise(query: &str) -> Option<String> {
-    let mut words: Vec<&str> = query.split_whitespace().collect();
-    let last = words.pop()?;
-    let lower = last.to_ascii_lowercase();
-    let singular = if let Some(stem) = lower.strip_suffix("ies") {
-        format!("{stem}y")
-    } else if lower.ends_with("oes")
-        || lower.ends_with("ses")
-        || lower.ends_with("xes")
-        || lower.ends_with("ches")
-        || lower.ends_with("shes")
-    {
-        lower[..lower.len() - 2].to_string()
-    } else if lower.ends_with('s') && !lower.ends_with("ss") && lower.len() > 2 {
-        lower[..lower.len() - 1].to_string()
-    } else {
-        return None;
-    };
-    words.push(&singular);
-    Some(words.join(" "))
+    measure::singularise(query)
 }
 
 async fn search_once(ctx: &Ctx<'_>, query: &str) -> Result<Vec<Candidate>, ToolError> {
@@ -583,11 +584,89 @@ fn nutrients_for(food: &Value, grams: f64) -> Value {
     })
 }
 
+/// The words of a phrase, lower case, stripped of punctuation and reduced to
+/// the singular, so "2 Chicken Breasts!" and "breast" can be compared.
+fn compare_words(text: &str) -> Vec<String> {
+    text.split_whitespace()
+        .map(|w| {
+            w.trim_matches(|c: char| !c.is_alphanumeric())
+                .to_lowercase()
+        })
+        .filter(|w| !w.is_empty())
+        .map(|w| measure::singularise(&w).unwrap_or(w))
+        .collect()
+}
+
+/// Whether `needle` appears in `haystack` as consecutive words.
+fn contains_words(haystack: &[String], needle: &[String]) -> bool {
+    !needle.is_empty()
+        && needle.len() <= haystack.len()
+        && haystack.windows(needle.len()).any(|w| w == needle)
+}
+
+/// The food's own household measure that a counted amount most likely means.
+///
+/// Two ways in, because people write it both ways. "2 slices of bread" names
+/// the measure outright, so the unit the parser kept is matched against the
+/// labels. "2 chicken breasts" names it inside the food, so the words of the
+/// line are searched for a label instead — "1 breast" is in "chicken
+/// breasts" once both are singular.
+///
+/// Nothing is matched loosely: a food whose measures are "1 large" and
+/// "1 medium" answers "2 eggs" with neither, and the serving size takes over
+/// as it always did. A wrong measure would be a wrong weight.
+fn matching_portion<'a>(food: &'a Value, amount: &Amount, line: &str) -> Option<&'a Value> {
+    let Amount::Count { unit, .. } = amount else {
+        return None;
+    };
+    let portions = food.get("portions")?.as_array()?;
+    let wanted = compare_words(unit.as_deref().unwrap_or(line));
+    if wanted.is_empty() {
+        return None;
+    }
+
+    portions.iter().find(|portion| {
+        let label = portion
+            .get("label")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let words = compare_words(measure::measure_of(label));
+        portion
+            .get("grams")
+            .and_then(Value::as_f64)
+            .is_some_and(|g| g > 0.0)
+            && match unit {
+                // "cup" is a match for "1 cup, chopped".
+                Some(_) => contains_words(&words, &wanted),
+                None => contains_words(&wanted, &words),
+            }
+    })
+}
+
 /// Work out the grams an amount comes to for a given food, and say how.
-fn grams_for(food: &Value, amount: &Amount) -> (f64, String) {
+///
+/// Returns the portion it went through, when it went through one, so the
+/// entry can be written as that portion rather than as the grams it came to:
+/// the diary then remembers "2 chicken breasts" and not only 348 g.
+fn grams_for(food: &Value, amount: &Amount, line: &str) -> (f64, String, Option<Value>) {
     match amount {
-        Amount::Grams(g) => (*g, format!("{g} g as written")),
+        Amount::Grams(g) => (*g, format!("{g} g as written"), None),
         Amount::Count { n, unit } => {
+            if let Some(portion) = matching_portion(food, amount, line) {
+                let grams = num(portion, "grams");
+                let label = portion
+                    .get("label")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                let basis =
+                    format!("{n} × \"{label}\" ({grams} g), a household measure of this food");
+                return (
+                    (n * grams * 1000.0).round() / 1000.0,
+                    basis,
+                    Some(portion.clone()),
+                );
+            }
+
             let serving = food
                 .get("serving_size_g")
                 .and_then(Value::as_f64)
@@ -600,11 +679,39 @@ fn grams_for(food: &Value, amount: &Amount) -> (f64, String) {
                 .unwrap_or_default();
             let basis = match unit {
                 Some(u) => format!(
-                    "{n} × {serving} g serving{label}; \"{u}\" is not a unit the database knows, so it was counted as servings"
+                    "{n} × {serving} g serving{label}; \"{u}\" is not a measure this food has, so it was counted as servings"
                 ),
                 None => format!("{n} × {serving} g serving{label}"),
             };
-            (n * serving, basis)
+            (n * serving, basis, None)
+        }
+    }
+}
+
+/// What one resolved item will say its amount is, and how to write it.
+///
+/// A portion is sent to the diary as a portion — the server multiplies it out
+/// and keeps the words — so the assistant, the app and a script all arrive at
+/// the same entry.
+fn amount_fields(item: &mut Map<String, Value>, grams: f64, portion: Option<Value>, count: f64) {
+    match portion {
+        Some(portion) => {
+            let label = portion
+                .get("label")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            item.insert(
+                "portion_id".into(),
+                portion.get("id").cloned().unwrap_or(Value::Null),
+            );
+            item.insert("portion_count".into(), json!(count));
+            item.insert(
+                "amount".into(),
+                json!(measure::portion_phrase(label, count)),
+            );
+        }
+        None => {
+            item.insert("amount".into(), json!(measure::grams_phrase(grams)));
         }
     }
 }
@@ -641,11 +748,12 @@ async fn log_food(ctx: &Ctx<'_>, args: Map<String, Value>) -> ToolResult {
     if let Some(id) = food_id {
         let food = food_by_id(ctx, &id).await?;
         let parsed = parse_line(&text);
-        let (grams, basis) = match grams_override {
-            Some(g) => (g, format!("{g} g as given")),
-            None => grams_for(&food, &parsed.amount),
+        let (grams, basis, portion) = match grams_override {
+            // Grams given outright are the amount, whatever the words said.
+            Some(g) => (g, format!("{g} g as given"), None),
+            None => grams_for(&food, &parsed.amount, &parsed.food),
         };
-        items.push(json!({
+        let mut item = json!({
             "text": text,
             "food_id": food.get("id"),
             "name": food.get("name"),
@@ -654,7 +762,14 @@ async fn log_food(ctx: &Ctx<'_>, args: Map<String, Value>) -> ToolResult {
             "grams": grams,
             "basis": basis,
             "nutrients": nutrients_for(&food, grams),
-        }));
+        });
+        amount_fields(
+            item.as_object_mut().expect("just built as an object"),
+            grams,
+            portion,
+            parsed.amount.count(),
+        );
+        items.push(item);
     } else {
         let whole = parse_line(&text);
         let whole_match = if whole.food.is_empty() {
@@ -691,7 +806,7 @@ async fn log_food(ctx: &Ctx<'_>, args: Map<String, Value>) -> ToolResult {
                     }));
                 }
                 Some(best) => {
-                    let (grams, basis) = grams_for(&best.food, &line.amount);
+                    let (grams, basis, portion) = grams_for(&best.food, &line.amount, &line.food);
                     if !best.is_tight() {
                         all_tight = false;
                     }
@@ -701,7 +816,7 @@ async fn log_food(ctx: &Ctx<'_>, args: Map<String, Value>) -> ToolResult {
                         .take(4)
                         .map(Candidate::summary)
                         .collect();
-                    items.push(json!({
+                    let mut item = json!({
                         "text": line.food,
                         "food_id": best.food.get("id"),
                         "name": best.food.get("name"),
@@ -712,7 +827,14 @@ async fn log_food(ctx: &Ctx<'_>, args: Map<String, Value>) -> ToolResult {
                         "basis": basis,
                         "nutrients": nutrients_for(&best.food, grams),
                         "alternatives": alternatives,
-                    }));
+                    });
+                    amount_fields(
+                        item.as_object_mut().expect("just built as an object"),
+                        grams,
+                        portion,
+                        line.amount.count(),
+                    );
+                    items.push(item);
                 }
             }
         }
@@ -757,8 +879,17 @@ async fn log_food(ctx: &Ctx<'_>, args: Map<String, Value>) -> ToolResult {
         let mut body = json!({
             "meal": meal,
             "food_id": item.get("food_id"),
-            "quantity_g": item.get("grams"),
         });
+        // An amount that came from a portion is written as that portion, so
+        // the entry remembers the words as well as the weight. The server
+        // does the multiplication either way; sending both would be refused.
+        match (item.get("portion_id"), item.get("portion_count")) {
+            (Some(portion_id), Some(count)) if !portion_id.is_null() => {
+                body["portion_id"] = portion_id.clone();
+                body["portion_count"] = count.clone();
+            }
+            _ => body["quantity_g"] = item.get("grams").cloned().unwrap_or(Value::Null),
+        }
         if let Some(d) = &date {
             body["logged_on"] = json!(d);
         }
@@ -859,9 +990,22 @@ async fn add_recipe_from_text(ctx: &Ctx<'_>, args: Map<String, Value>) -> ToolRe
             // Only a match the name itself contains counts. A fuzzy hit on a
             // recipe would be a guess baked into every serving from now on.
             Some(candidate) if candidate.is_tight() => {
-                let (grams, basis) = grams_for(&candidate.food, &parsed.amount);
-                items.push(json!({"food_id": candidate.food.get("id"), "quantity_g": grams}));
-                resolved.push(json!({
+                let (grams, basis, portion) =
+                    grams_for(&candidate.food, &parsed.amount, &parsed.food);
+                let count = parsed.amount.count();
+                // An ingredient written as "2 chicken breasts" is stored as
+                // that, so the recipe page and the card read the way the line
+                // was typed. Either the portion or the grams, never both.
+                let mut item = json!({"food_id": candidate.food.get("id")});
+                match &portion {
+                    Some(portion) => {
+                        item["portion_id"] = portion.get("id").cloned().unwrap_or(Value::Null);
+                        item["portion_count"] = json!(count);
+                    }
+                    None => item["quantity_g"] = json!(grams),
+                }
+                items.push(item);
+                let mut record = json!({
                     "line": line,
                     "food_id": candidate.food.get("id"),
                     "name": candidate.food.get("name"),
@@ -869,7 +1013,14 @@ async fn add_recipe_from_text(ctx: &Ctx<'_>, args: Map<String, Value>) -> ToolRe
                     "match": candidate.tier,
                     "grams": grams,
                     "basis": basis,
-                }));
+                });
+                amount_fields(
+                    record.as_object_mut().expect("just built as an object"),
+                    grams,
+                    portion,
+                    count,
+                );
+                resolved.push(record);
             }
             other => {
                 items.push(json!({"label": line}));
@@ -1035,19 +1186,78 @@ mod tests {
     #[test]
     fn grams_come_from_the_serving_size_for_a_count() {
         let egg = json!({"serving_size_g": 50.0, "serving_label": "1 large"});
-        let (grams, basis) = grams_for(&egg, &count(2.0));
+        let (grams, basis, portion) = grams_for(&egg, &count(2.0), "eggs");
         assert_eq!(grams, 100.0);
         assert!(basis.contains("2 × 50 g serving (1 large)"));
+        assert!(portion.is_none());
 
-        let (grams, _) = grams_for(&egg, &Amount::Grams(150.0));
+        let (grams, _, _) = grams_for(&egg, &Amount::Grams(150.0), "eggs");
         assert_eq!(grams, 150.0);
 
         let unknown = json!({});
-        let (grams, _) = grams_for(&unknown, &count(1.0));
+        let (grams, _, _) = grams_for(&unknown, &count(1.0), "something");
         assert_eq!(
             grams, 100.0,
             "a food with no serving size is taken per 100 g"
         );
+    }
+
+    /// The thing this feature is for: the count goes through the food's own
+    /// measure, and comes back as the measure rather than as a weight.
+    #[test]
+    fn a_count_goes_through_the_foods_own_measures_when_the_words_fit() {
+        let chicken = json!({
+            "serving_size_g": 100.0,
+            "portions": [
+                {"id": "11111111-1111-1111-1111-111111111111", "label": "1 breast", "grams": 174.0},
+                {"id": "22222222-2222-2222-2222-222222222222", "label": "1 cup, diced", "grams": 140.0}
+            ]
+        });
+
+        // "2 chicken breasts" — the measure is named inside the food.
+        let (grams, basis, portion) = grams_for(&chicken, &count(2.0), "chicken breasts");
+        assert_eq!(grams, 348.0);
+        assert!(basis.contains("\"1 breast\""), "{basis}");
+        assert_eq!(portion.unwrap()["label"], "1 breast");
+
+        // "2 cups of chicken" — the parser kept the unit, so it is matched
+        // against the labels directly, and "cup" finds "1 cup, diced".
+        let cups = Amount::Count {
+            n: 2.0,
+            unit: Some("cup".into()),
+        };
+        let (grams, _, portion) = grams_for(&chicken, &cups, "chicken");
+        assert_eq!(grams, 280.0);
+        assert_eq!(portion.unwrap()["label"], "1 cup, diced");
+
+        // Nothing fits: the serving size takes over rather than a measure
+        // being guessed at.
+        let (grams, basis, portion) = grams_for(&chicken, &count(2.0), "chicken");
+        assert_eq!(grams, 200.0);
+        assert!(basis.contains("serving"), "{basis}");
+        assert!(portion.is_none());
+
+        // A food with no measures at all is the behaviour that always was.
+        let plain = json!({"serving_size_g": 50.0, "portions": []});
+        let (grams, _, portion) = grams_for(&plain, &count(2.0), "eggs");
+        assert_eq!(grams, 100.0);
+        assert!(portion.is_none());
+    }
+
+    #[test]
+    fn a_measure_is_matched_on_whole_words_only() {
+        let bread = json!({
+            "serving_size_g": 30.0,
+            "portions": [{"id": "33333333-3333-3333-3333-333333333333", "label": "1 slice", "grams": 28.0}]
+        });
+        // "slices" is the same measure as "slice"...
+        let slices = Amount::Count {
+            n: 2.0,
+            unit: Some("slice".into()),
+        };
+        assert_eq!(grams_for(&bread, &slices, "bread").0, 56.0);
+        // ...and a food whose name merely ends in one is not counted in it.
+        assert!(grams_for(&bread, &count(2.0), "sliceable loaf").2.is_none());
     }
 
     #[test]

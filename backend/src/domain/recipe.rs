@@ -5,6 +5,7 @@ use utoipa::ToSchema;
 use uuid::Uuid;
 use validator::Validate;
 
+use super::measure;
 use super::nutrients::Nutrients;
 
 /// The write paths only need the id back; everything a client reads is
@@ -27,6 +28,8 @@ pub struct RecipeItemRow {
     pub label: Option<String>,
     pub quantity_g: Option<f64>,
     pub servings: Option<f64>,
+    pub portion_label: Option<String>,
+    pub portion_count: Option<f64>,
     pub note: Option<String>,
     pub sort_order: i32,
     /// The food's name, the sub-recipe's, or the free-text label.
@@ -81,6 +84,15 @@ pub struct RecipeItem {
     pub variant_label: Option<String>,
     pub quantity_g: Option<f64>,
     pub servings: Option<f64>,
+    /// The household measure this ingredient was written in — "1 breast" —
+    /// and how many of them. A snapshot: the grams beside it stay what they
+    /// were even if the portion is corrected later.
+    pub portion_label: Option<String>,
+    pub portion_count: Option<f64>,
+    /// The amount as a phrase: "2 chicken breasts", "200 g", "1 serving",
+    /// and empty for an ingredient that is only words. What the recipe page,
+    /// the share page and the export all print.
+    pub amount_label: String,
     /// What this ingredient weighs: its grams for a food, and for a
     /// sub-recipe the weight of the servings taken from it.
     pub weight_g: f64,
@@ -171,14 +183,51 @@ pub struct RecipeItemInput {
         message = "must be between 0.01 and 1000 servings"
     ))]
     pub servings: Option<f64>,
+    /// Write the amount as a household measure instead of a weight: a portion
+    /// of this ingredient's food (`food.portions[]`, or the food's own
+    /// serving, whose id is the food's id). The server multiplies it out and
+    /// stores the grams, so sending `quantity_g` as well is a 400. Only a
+    /// food ingredient can have one.
+    pub portion_id: Option<Uuid>,
+    /// How many of them. Defaults to 1.
+    #[validate(range(min = 0.01, max = 1000.0, message = "must be between 0.01 and 1000"))]
+    pub portion_count: Option<f64>,
     #[validate(length(max = 200, message = "must be at most 200 characters"))]
     pub note: Option<String>,
 }
 
 impl RecipeItemInput {
+    /// A portion is a way of arriving at grams, so it belongs only where
+    /// grams do, and only when grams were not given outright.
+    ///
+    /// Checked before the XOR below, because resolving the portion is what
+    /// fills `quantity_g` in — an item that says "2 breasts" has no grams
+    /// until the server has looked the portion up.
+    pub fn check_portion(&self) -> Result<(), &'static str> {
+        if self.portion_id.is_none() {
+            return if self.portion_count.is_some() {
+                Err("portion_count needs a portion_id to count")
+            } else {
+                Ok(())
+            };
+        }
+        if self.quantity_g.is_some() {
+            return Err("an ingredient is measured in grams or in portions \u{2014} send quantity_g or portion_id, not both");
+        }
+        if self.food_id.is_none() {
+            return Err("only a food ingredient can be measured in portions");
+        }
+        Ok(())
+    }
+
     /// Check the XOR here as well as in the database, so a malformed item comes
     /// back naming what is wrong rather than as a constraint name.
-    pub fn check_target(&self) -> Result<(), &'static str> {
+    ///
+    /// The grams are passed in rather than read off the request, because an
+    /// ingredient written as "2 breasts" only has grams once the portion has
+    /// been multiplied out — and once it has, it is an ordinary food in grams
+    /// and answers to exactly this rule.
+    pub fn check_target(&self, quantity_g: Option<f64>) -> Result<(), &'static str> {
         let label = self
             .label
             .as_deref()
@@ -199,15 +248,15 @@ impl RecipeItemInput {
         if label.is_some() {
             // A free-text ingredient contributes nothing, so a quantity beside
             // it would be a number the totals deliberately ignore.
-            if self.quantity_g.is_some() || self.servings.is_some() {
+            if quantity_g.is_some() || self.servings.is_some() {
                 return Err("a free-text ingredient carries no quantity");
             }
             return Ok(());
         }
 
         if self.food_id.is_some() {
-            if self.quantity_g.is_none() {
-                return Err("quantity_g is required for a food ingredient");
+            if quantity_g.is_none() {
+                return Err("quantity_g, or a portion_id, is required for a food ingredient");
             }
             if self.servings.is_some() {
                 return Err("a food ingredient is measured in grams, not servings");
@@ -216,7 +265,7 @@ impl RecipeItemInput {
             if self.servings.is_none() {
                 return Err("servings is required for a recipe ingredient");
             }
-            if self.quantity_g.is_some() {
+            if quantity_g.is_some() {
                 return Err("a recipe ingredient is measured in servings, not grams");
             }
         }
@@ -302,6 +351,11 @@ pub struct FoodRef {
 pub struct RecipeExportItem {
     pub food: Option<FoodRef>,
     pub quantity_g: Option<f64>,
+    /// How the amount was written, when it was written as a household
+    /// measure: "1 breast", twice. The grams beside it are what counts —
+    /// these two are here so a card reads the way the recipe does.
+    pub portion_label: Option<String>,
+    pub portion_count: Option<f64>,
     /// A sub-recipe, inlined. The schema is recursive here, and utoipa has
     /// to be told so or it collects schemas forever.
     #[schema(no_recursion)]
@@ -416,8 +470,13 @@ fn write_items(out: &mut String, items: &[RecipeExportItem], indent: usize) {
                 .map(|b| format!(" ({b})"))
                 .unwrap_or_default();
             out.push_str(&format!(
-                "{pad}- {} g {}{brand}{}\n",
-                trim_float(item.quantity_g.unwrap_or_default()),
+                "{pad}- {} {}{brand}{}\n",
+                measure::amount_label(
+                    item.portion_label.as_deref(),
+                    item.portion_count,
+                    item.quantity_g,
+                    None
+                ),
                 food.name,
                 note(item)
             ));
@@ -458,14 +517,10 @@ fn plural(n: f64) -> &'static str {
 ///
 /// Shared with the shared-recipe page and the preview card, so a quantity
 /// reads the same in the Markdown export, in the HTML and in the picture.
+/// The rule itself lives in `domain::measure`, which needs the same one for
+/// a portion count: "1.5 cups" and "1.5 servings" are the same number.
 pub fn trim_float(v: f64) -> String {
-    let s = format!("{:.2}", v);
-    let s = s.trim_end_matches('0').trim_end_matches('.');
-    if s.is_empty() {
-        "0".to_string()
-    } else {
-        s.to_string()
-    }
+    super::measure::number(v)
 }
 
 /// One decimal place, trailing zero trimmed.
@@ -576,6 +631,18 @@ mod export_tests {
                     ..Default::default()
                 },
                 RecipeExportItem {
+                    food: Some(FoodRef {
+                        key: "chicken breast|".into(),
+                        name: "Chicken breast".into(),
+                        brand: None,
+                        variant_label: None,
+                    }),
+                    quantity_g: Some(348.0),
+                    portion_label: Some("1 breast".into()),
+                    portion_count: Some(2.0),
+                    ..Default::default()
+                },
+                RecipeExportItem {
                     label: Some("salt to taste".into()),
                     ..Default::default()
                 },
@@ -595,7 +662,8 @@ mod export_tests {
         assert_eq!(
             md,
             "# Pasta\n\nQuick.\n\nMakes 2 servings.\n\n## Ingredients\n\n\
-             - 200 g Spaghetti (Barilla)\n- 1 serving of Sauce\n  - 400 g Tomato\n- salt to taste\n\n\
+             - 200 g Spaghetti (Barilla)\n- 1 serving of Sauce\n  - 400 g Tomato\n\
+             - 2 breasts Chicken breast\n- salt to taste\n\n\
              ## Method\n\n1. Boil\n2. Toss\n\n## Nutrition per serving\n\n\
              | Calories | Protein | Carbs | Net carbs | Fat | Fiber | Sugar | Sat. fat | Sodium |\n\
              |---|---|---|---|---|---|---|---|---|\n\

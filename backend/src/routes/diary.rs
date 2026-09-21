@@ -38,7 +38,7 @@ const MEALS: [&str; 4] = ["breakfast", "lunch", "dinner", "snack"];
 ///     lateral join, so both cases reduce to a single multiply in Rust.
 pub const ENTRY_SELECT: &str = r#"
     SELECT d.id, d.logged_on, d.meal, d.food_id, d.recipe_id, d.quantity_g, d.recipe_servings,
-           d.created_at, d.updated_at,
+           d.portion_label, d.portion_count, d.created_at, d.updated_at,
            f.name AS food_name, f.brand AS food_brand, r.name AS recipe_name,
            COALESCE(f.calories_kcal,   rt.calories_kcal)   AS calories_kcal,
            COALESCE(f.protein_g,       rt.protein_g)       AS protein_g,
@@ -439,26 +439,64 @@ pub async fn create(
     // CHECK constraint surface as an opaque error.
     let id: Uuid = match (body.food_id, body.recipe_id) {
         (Some(food_id), None) => {
-            let grams = body.quantity_g.ok_or_else(|| {
-                ApiError::bad_request("quantity_g is required when logging a food")
-            })?;
-
             // Ownership/visibility check before insert.
             super::foods::load_food(&state, food_id).await?;
 
+            // Either the weight, or a measure and a count of it. The server
+            // does the multiplying so that every client — the app, a script,
+            // an assistant — arrives at the same grams and records the same
+            // words for them.
+            let (grams, portion_label, portion_count) = match body.portion_id {
+                Some(portion_id) => {
+                    if body.quantity_g.is_some() {
+                        return Err(ApiError::bad_request(
+                            "an amount is grams or portions — send quantity_g or portion_id, not both",
+                        ));
+                    }
+                    let count = body.portion_count.unwrap_or(1.0);
+                    let (label, grams) =
+                        super::foods::portion_snapshot(&state.db, food_id, portion_id).await?;
+                    (round_grams(grams * count), Some(label), Some(count))
+                }
+                None => {
+                    if body.portion_count.is_some() {
+                        return Err(ApiError::bad_request(
+                            "portion_count needs a portion_id to count",
+                        ));
+                    }
+                    let grams = body.quantity_g.ok_or_else(|| {
+                        ApiError::bad_request(
+                            "quantity_g, or a portion_id, is required when logging a food",
+                        )
+                    })?;
+                    (grams, None, None)
+                }
+            };
+            check_grams(grams)?;
+
             sqlx::query_scalar(
-                "INSERT INTO diary_entries (user_id, logged_on, meal, food_id, quantity_g)
-                 VALUES ($1, $2, $3, $4, $5) RETURNING id",
+                "INSERT INTO diary_entries
+                     (user_id, logged_on, meal, food_id, quantity_g, portion_label, portion_count)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id",
             )
             .bind(user.id)
             .bind(date)
             .bind(&meal)
             .bind(food_id)
             .bind(grams)
+            .bind(portion_label)
+            .bind(portion_count)
             .fetch_one(&state.db)
             .await?
         }
         (None, Some(recipe_id)) => {
+            // A recipe is already logged in servings of itself; a household
+            // measure of it would be a second answer to the same question.
+            if body.portion_id.is_some() || body.portion_count.is_some() {
+                return Err(ApiError::bad_request(
+                    "a recipe is logged in servings, not portions",
+                ));
+            }
             let servings = body.recipe_servings.unwrap_or(1.0);
 
             let owned: Option<(Uuid,)> =
@@ -519,13 +557,16 @@ pub async fn copy(
     // One INSERT ... SELECT, so the copy is atomic by construction: either
     // every entry of the source lands on the target day or none does. Amounts
     // and targets carry over as they are — the same food in the same grams,
-    // the same recipe in the same servings — and each new row is a fresh
+    // the same recipe in the same servings, and "two chicken breasts" still
+    // reading as two chicken breasts — and each new row is a fresh
     // entry with its own id and timestamps, since it is a new fact about a
     // different day, not a link to the old one.
     let ids: Vec<Uuid> = sqlx::query_scalar(
         "INSERT INTO diary_entries
-             (user_id, logged_on, meal, food_id, recipe_id, quantity_g, recipe_servings)
-         SELECT user_id, $3, meal, food_id, recipe_id, quantity_g, recipe_servings
+             (user_id, logged_on, meal, food_id, recipe_id, quantity_g, recipe_servings,
+              portion_label, portion_count)
+         SELECT user_id, $3, meal, food_id, recipe_id, quantity_g, recipe_servings,
+                portion_label, portion_count
          FROM diary_entries
          WHERE user_id = $1 AND logged_on = $2 AND ($4::text IS NULL OR meal = $4)
          ORDER BY created_at ASC
@@ -575,6 +616,48 @@ pub async fn patch(
 
     let meal = body.meal.as_deref().map(|m| normalize_meal(Some(m)));
 
+    // A new amount is resolved before the update, because a portion has to be
+    // looked up against the food this entry already points at — the entry
+    // says which food, the request only says which measure.
+    let entry_food: Option<Uuid> =
+        sqlx::query_scalar("SELECT food_id FROM diary_entries WHERE id = $1 AND user_id = $2")
+            .bind(id)
+            .bind(user.id)
+            .fetch_optional(&state.db)
+            .await?
+            .ok_or(ApiError::NotFound("diary entry"))?;
+
+    let (quantity_g, portion_label, portion_count) = match body.portion_id {
+        Some(portion_id) => {
+            if body.quantity_g.is_some() {
+                return Err(ApiError::bad_request(
+                    "an amount is grams or portions — send quantity_g or portion_id, not both",
+                ));
+            }
+            let food_id = entry_food.ok_or_else(|| {
+                ApiError::bad_request("a recipe entry is measured in servings, not portions")
+            })?;
+            let count = body.portion_count.unwrap_or(1.0);
+            let (label, grams) =
+                super::foods::portion_snapshot(&state.db, food_id, portion_id).await?;
+            let grams = round_grams(grams * count);
+            check_grams(grams)?;
+            (Some(grams), Some(label), Some(count))
+        }
+        None => {
+            if body.portion_count.is_some() {
+                return Err(ApiError::bad_request(
+                    "portion_count needs a portion_id to count",
+                ));
+            }
+            // Grams typed by hand replace the measure rather than sitting
+            // beside it: once somebody has said 300 g, the entry is no longer
+            // two of anything, and a phrase that no longer matches the weight
+            // is worse than no phrase.
+            (body.quantity_g, None, None)
+        }
+    };
+
     // Quantity fields are only applied to the matching entry kind, so a
     // `quantity_g` sent for a recipe entry cannot break the XOR constraint.
     let result = sqlx::query(
@@ -583,6 +666,10 @@ pub async fn patch(
             meal = COALESCE($4, meal),
             quantity_g = CASE WHEN food_id IS NOT NULL
                               THEN COALESCE($5, quantity_g) ELSE quantity_g END,
+            portion_label = CASE WHEN food_id IS NOT NULL AND $5::float8 IS NOT NULL
+                              THEN $7 ELSE portion_label END,
+            portion_count = CASE WHEN food_id IS NOT NULL AND $5::float8 IS NOT NULL
+                              THEN $8 ELSE portion_count END,
             recipe_servings = CASE WHEN recipe_id IS NOT NULL
                               THEN COALESCE($6, recipe_servings) ELSE recipe_servings END,
             updated_at = now()
@@ -592,8 +679,10 @@ pub async fn patch(
     .bind(user.id)
     .bind(body.logged_on)
     .bind(meal)
-    .bind(body.quantity_g)
+    .bind(quantity_g)
     .bind(body.recipe_servings)
+    .bind(portion_label)
+    .bind(portion_count)
     .execute(&state.db)
     .await?;
 
@@ -638,6 +727,25 @@ pub async fn load_entry(state: &AppState, user_id: Uuid, id: Uuid) -> ApiResult<
     .ok_or(ApiError::NotFound("diary entry"))?;
 
     Ok(row.into())
+}
+
+/// The bounds `quantity_g` is validated against when it is typed, applied to
+/// the figure a portion multiplied out to — otherwise "1000 cups" would walk
+/// past a check that a hand-typed amount cannot.
+fn check_grams(grams: f64) -> ApiResult<()> {
+    if !(0.1..=100_000.0).contains(&grams) {
+        return Err(ApiError::bad_request(
+            "that comes to more than 100000 g: check the count",
+        ));
+    }
+    Ok(())
+}
+
+/// Multiplying a portion out lands on figures like 173.99999999999997. The
+/// weight is a measurement, not a constant, and three decimals is well past
+/// what any scale in a kitchen reports.
+fn round_grams(grams: f64) -> f64 {
+    (grams * 1000.0).round() / 1000.0
 }
 
 fn normalize_meal(meal: Option<&str>) -> String {

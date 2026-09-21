@@ -475,6 +475,11 @@ struct Row {
 
 /// An ingredient as the page and the JSON-LD both need it: a measure and a
 /// thing, from the one list, so the two cannot describe different recipes.
+///
+/// The measure is the server's own `amount_label`, which is what the app and
+/// the Markdown card print too — "2 chicken breasts" here reads the way the
+/// person wrote it, and `recipeIngredient` is exactly the line another site's
+/// importer expects to parse.
 fn ingredient_rows(recipe: &Recipe) -> Vec<Row> {
     recipe
         .items
@@ -487,19 +492,8 @@ fn ingredient_rows(recipe: &Recipe) -> Vec<Row> {
             if let Some(brand) = item.brand.as_deref().filter(|b| !b.is_empty()) {
                 name = format!("{name} ({brand})");
             }
-            let amount = if let Some(grams) = item.quantity_g {
-                format!("{} g", trim_float(grams))
-            } else if let Some(servings) = item.servings {
-                format!(
-                    "{} serving{}",
-                    trim_float(servings),
-                    if servings == 1.0 { "" } else { "s" }
-                )
-            } else {
-                String::new()
-            };
             Row {
-                amount,
+                amount: item.amount_label.clone(),
                 name,
                 note: item
                     .note
@@ -828,11 +822,24 @@ mod tests {
             variant_label: None,
             quantity_g: grams,
             servings,
+            portion_label: None,
+            portion_count: None,
+            amount_label: crate::domain::measure::amount_label(None, None, grams, servings),
             weight_g: grams.unwrap_or(100.0),
             note: None,
             sort_order: 0,
             nutrients: nutrients(),
         }
+    }
+
+    /// The same ingredient, written the way somebody would say it.
+    fn item_in_portions(name: &str, grams: f64, label: &str, count: f64) -> RecipeItem {
+        let mut item = item(name, Some(grams), None);
+        item.amount_label =
+            crate::domain::measure::amount_label(Some(label), Some(count), Some(grams), None);
+        item.portion_label = Some(label.to_string());
+        item.portion_count = Some(count);
+        item
     }
 
     fn recipe(name: &str) -> Recipe {
@@ -992,6 +999,38 @@ mod tests {
         assert!(html.contains("320 kcal"));
         // No script beyond the structured data: nothing here needs running.
         assert!(!html.contains("<script src"));
+    }
+
+    /// The point of rendering the phrase on the server: the page a stranger
+    /// opens says what the cook said, and so does the line an importer reads
+    /// out of the structured data.
+    #[test]
+    fn an_ingredient_measured_in_portions_reads_that_way_here_too() {
+        let mut r = recipe("Chicken traybake");
+        r.items = vec![
+            item_in_portions("Chicken breast", 348.0, "1 chicken breast", 2.0),
+            item_in_portions("Bread", 28.0, "1 slice", 1.0),
+            item("Flour", Some(200.0), None),
+        ];
+        let html = render(&r);
+        assert!(
+            html.contains(r#"<span class="amount">2 chicken breasts</span>"#),
+            "{html}"
+        );
+        assert!(
+            html.contains(r#"<span class="amount">1 slice</span>"#),
+            "{html}"
+        );
+
+        let scraped = jsonld::recipe_from_html(&html).expect("no Recipe found in the page");
+        assert_eq!(
+            scraped.ingredients,
+            vec![
+                "2 chicken breasts Chicken breast",
+                "1 slice Bread",
+                "200 g Flour"
+            ]
+        );
     }
 
     #[test]

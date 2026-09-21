@@ -98,6 +98,14 @@ pub struct ExportedDiaryEntry {
     pub recipe_name: Option<String>,
     pub quantity_g: Option<f64>,
     pub recipe_servings: Option<f64>,
+    /// The household measure the amount was entered as — "1 breast", twice.
+    /// A snapshot, so it travels as words rather than as a reference to a
+    /// portion the reading instance may not have. Absent from files written
+    /// before this existed, and optional for that reason.
+    #[serde(default)]
+    pub portion_label: Option<String>,
+    #[serde(default)]
+    pub portion_count: Option<f64>,
     pub created_at: Option<DateTime<Utc>>,
 }
 
@@ -314,10 +322,13 @@ async fn build_export(state: &AppState, user_id: Uuid) -> ApiResult<AccountExpor
         recipe_name: Option<String>,
         quantity_g: Option<f64>,
         recipe_servings: Option<f64>,
+        portion_label: Option<String>,
+        portion_count: Option<f64>,
         created_at: DateTime<Utc>,
     }
     let diary: Vec<ExportedDiaryEntry> = sqlx::query_as::<_, DiaryLine>(&format!(
-        "SELECT d.logged_on, d.meal, d.quantity_g, d.recipe_servings, d.created_at,
+        "SELECT d.logged_on, d.meal, d.quantity_g, d.recipe_servings,
+                d.portion_label, d.portion_count, d.created_at,
                 CASE WHEN f.id IS NULL THEN NULL ELSE {FOOD_KEY_SQL} END AS food_key,
                 f.name AS food_name, f.brand AS food_brand, f.variant_label AS food_variant,
                 r.name AS recipe_name
@@ -346,6 +357,8 @@ async fn build_export(state: &AppState, user_id: Uuid) -> ApiResult<AccountExpor
         recipe_name: d.recipe_name,
         quantity_g: d.quantity_g,
         recipe_servings: d.recipe_servings,
+        portion_label: d.portion_label,
+        portion_count: d.portion_count,
         created_at: Some(d.created_at),
     })
     .collect();
@@ -1279,6 +1292,11 @@ async fn current_shape(
             sub_recipe_id,
             quantity_g,
             servings,
+            // Grams are what an ingredient is; a portion is one way of having
+            // written them, and this shape exists to compare two recipes, not
+            // to reproduce how each was typed.
+            portion_id: None,
+            portion_count: None,
             note,
         },
     )
@@ -1332,6 +1350,8 @@ async fn resolve_item(
                 sub_recipe_id: None,
                 quantity_g: Some(grams),
                 servings: None,
+                portion_id: None,
+                portion_count: None,
                 note: note_text,
             })),
             None => {
@@ -1357,6 +1377,8 @@ async fn resolve_item(
                 sub_recipe_id: Some(*id),
                 quantity_g: None,
                 servings: Some(servings),
+                portion_id: None,
+                portion_count: None,
                 note: note_text,
             })),
             _ => {
@@ -1406,6 +1428,8 @@ fn text_item(label: String, note: Option<String>) -> RecipeItemInput {
         sub_recipe_id: None,
         quantity_g: None,
         servings: None,
+        portion_id: None,
+        portion_count: None,
         note,
     }
 }
@@ -1542,8 +1566,9 @@ async fn merge_diary(
 
         sqlx::query(
             "INSERT INTO diary_entries
-                 (user_id, logged_on, meal, food_id, recipe_id, quantity_g, recipe_servings, created_at)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, coalesce($8, now()))",
+                 (user_id, logged_on, meal, food_id, recipe_id, quantity_g, recipe_servings,
+                  portion_label, portion_count, created_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, coalesce($10, now()))",
         )
         .bind(user_id)
         .bind(e.logged_on)
@@ -1552,6 +1577,21 @@ async fn merge_diary(
         .bind(recipe_id)
         .bind(quantity_g)
         .bind(recipe_servings)
+        // Only alongside a food, and only as a pair: the database says so,
+        // and a file can say anything. Half a snapshot is dropped rather than
+        // refused, because the grams are the part that matters.
+        .bind(
+            food_id
+                .and(e.portion_count)
+                .and(e.portion_label.as_deref())
+                .filter(|l| !l.trim().is_empty()),
+        )
+        .bind(
+            food_id
+                .and(e.portion_label.as_deref().filter(|l| !l.trim().is_empty()))
+                .and(e.portion_count)
+                .filter(|c| *c > 0.0),
+        )
         .bind(e.created_at)
         .execute(&mut **tx)
         .await?;

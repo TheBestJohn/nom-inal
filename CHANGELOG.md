@@ -8,6 +8,64 @@ section and know what to update.
 
 ## Unreleased
 
+### Amounts people actually use
+
+- **Log a count of a household measure, not only a weight.** A food's
+  portions — "1 breast", "1 cup", "1 slice" — can now be *counted*: two
+  chicken breasts, one and a half cups. The server multiplies the measure
+  out, so the entry still stores grams and every total is computed from the
+  same number as before; what is new is that it also keeps what the person
+  said. The diary reads "2 chicken breasts · 348 g" instead of "348 g".
+- Recipe ingredients take the same amount, and carry it everywhere the
+  recipe goes: the recipe page, the shared page at `/r/{slug}`, its
+  schema.org `recipeIngredient` lines — "2 chicken breasts" is what other
+  sites' importers expect to read — and the Markdown card.
+- **The measure is a snapshot, not a link.** Correcting a portion from 174 g
+  to 200 g changes what the next meal works out to and never what an old one
+  says: the person ate 348 g, and a meal already logged does not quietly
+  change weight. Editing an entry's grams by hand clears the phrase, because
+  a weight typed in is no longer "two of" anything.
+- One place decides how a count reads. "1 chicken breast", "2 chicken
+  breasts", "3 slices", "2 patties", "4 oz" — never "4 ozs" — and, for the
+  descriptions USDA publishes rather than names anyone uses, an honest
+  "3 × cup, chopped" instead of a guess. Counts print as `1`, `1.5`, `0.5`.
+- **Every food offers something to pick.** A food's own serving size and
+  label are a household measure too, so they arrive in the same shape as a
+  portion, on a new `serving_portion` field — no invented row, nothing to
+  keep in step, and it can be counted exactly like a portion.
+- **Common portions on day one.** A new food whose name says what it is —
+  chicken breast, egg, banana, bread, potato, garlic, rice — is created with
+  the measures for it already on, from USDA FoodData Central's standard
+  portion weights. Only ever on a food that has none, only on a name that is
+  the thing rather than mentions it ("chicken breast burrito" gets nothing),
+  and never over a measure anyone typed in.
+- `log_food` understands the words: "2 chicken breasts" resolves through
+  that food's measures, "2 slices of bread" through its slice, and a count
+  that matches no measure still falls back to the serving size and says so.
+
+### API changes
+
+- `DiaryEntry` and `RecipeItem` gain **`portion_label`**, **`portion_count`**
+  and **`amount_label`** — the amount as a phrase, ready to show: "2 chicken
+  breasts", or the weight as before. `quantity_g` is unchanged and still
+  present. Additive.
+- `POST /api/v1/diary` and `PATCH /api/v1/diary/{id}` accept
+  **`portion_id`** + **`portion_count`** in place of `quantity_g`; the grams
+  are computed and stored. Sending both is a 400 naming the conflict, and a
+  portion belonging to another food is a 404. Every existing request is still
+  valid and still means what it did.
+- Recipe ingredients (`POST`/`PUT /api/v1/recipes`) take the same two fields
+  beside `food_id`. Only a food ingredient may carry one; a portion that is
+  not that food's is a 400, as an unknown food id already is.
+- `Food` gains **`serving_portion`**: the food's own serving expressed as a
+  portion, with the food's id as its `id` and `serving` as its `source`. It
+  is a field of its own rather than an extra element of `portions`, which
+  still means exactly "rows of `food_portions`".
+- `ExportedDiaryEntry` and the recipe export's ingredients carry
+  `portion_label` and `portion_count`, so a phrase survives an account
+  export and comes back on import. Files written before this simply have
+  neither.
+
 ### Shared links that look like the recipe
 
 - A shared recipe's link is now a page the server renders: `GET /r/{slug}`

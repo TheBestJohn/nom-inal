@@ -62,6 +62,15 @@ export interface RecipeItemInput {
   quantity_g?: number | null
   /** For a sub-recipe. */
   servings?: number | null
+  /**
+   * For a food, written as a household measure instead: one of the food's
+   * `portions`, or its `serving_portion`, and how many of them. The server
+   * works out the grams and keeps the words, so the ingredient reads "2
+   * chicken breasts". Send this or `quantity_g`, never both.
+   */
+  portion_id?: string | null
+  /** Defaults to 1. */
+  portion_count?: number | null
   note?: string | null
 }
 
@@ -266,6 +275,11 @@ export const api = {
   diaryDay: (date: string) => request<DiaryDay>('/diary/day', { query: { date } }),
   diarySummary: (from: string, to: string) =>
     request<DiarySummary>('/diary/summary', { query: { from, to } }),
+  /**
+   * An amount is either `quantity_g` or `{ portion_id, portion_count }` —
+   * "2 chicken breasts". The server multiplies the portion out and records
+   * both the grams and the words; sending both forms is a 400.
+   */
   logDiaryEntry: (body: {
     logged_on?: string
     meal?: string
@@ -273,10 +287,20 @@ export const api = {
     recipe_id?: string
     quantity_g?: number
     recipe_servings?: number
+    portion_id?: string
+    portion_count?: number
   }) => request<DiaryEntry>('/diary', { method: 'POST', body }),
+  /** Sending `quantity_g` here clears any portion the entry was logged with. */
   updateDiaryEntry: (
     id: string,
-    body: { quantity_g?: number; recipe_servings?: number; meal?: string; logged_on?: string },
+    body: {
+      quantity_g?: number
+      recipe_servings?: number
+      meal?: string
+      logged_on?: string
+      portion_id?: string
+      portion_count?: number
+    },
   ) => request<DiaryEntry>(`/diary/${id}`, { method: 'PATCH', body }),
   deleteDiaryEntry: (id: string) => request<void>(`/diary/${id}`, { method: 'DELETE' }),
   /** "I logged everything" for one day. An upsert; false unmarks. */

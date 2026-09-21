@@ -198,11 +198,14 @@ echo "== household portions"
 # Nobody weighs a cup of oats; they measure a cup. A portion is the answer to
 # "how many grams is that for this food", kept per food, offered beside grams,
 # and never what gets stored: the entry is grams whatever route led to them.
+#
+# Oats are in the bundled seed table (see `== amounts people use`), so this
+# food already has "1 cup" on it; the measure added here is one nobody seeds.
 CUP=$(curl -fsS -X POST "$BASE/foods/$OATS/portions" -H "$AUTH" -H 'content-type: application/json' \
-  -d '{"label":"1 cup","grams":80}')
-expect "a portion is added"               "$(echo "$CUP" | j " and [(p['label'], p['grams'], p['source']) for p in d['portions']]")" "[('1 cup', 80.0, 'user')]"
+  -d '{"label":"1 mug","grams":300}')
+expect "a portion is added"               "$(echo "$CUP" | j " and [(p['label'], p['grams'], p['source']) for p in d['portions'] if p['source']=='user']")" "[('1 mug', 300.0, 'user')]"
 expect "and does not count as an edit"    "$(echo "$CUP" | j "['revision']")" "1"
-expect "the list carries it too"          "$(curl -fsS "$BASE/foods?q=Rolled%20oats" -H "$AUTH" | j " and [p['label'] for f in d if f['id']=='$OATS' for p in f['portions']]")" "['1 cup']"
+expect "the list carries it too"          "$(curl -fsS "$BASE/foods?q=Rolled%20oats" -H "$AUTH" | j " and sorted(p['label'] for f in d if f['id']=='$OATS' for p in f['portions'])")" "['1 cup', '1 half cup', '1 mug']"
 # The picker reads the search stream, so a portion has to arrive there as
 # well. A run-scoped name: the table is global and persistent, and the search
 # collapses identical foods to the oldest, which on a reused database is a
@@ -217,13 +220,13 @@ expect "and so does the search stream" \
     | NAME="$PORTION_NAME" python3 -c 'import sys,json,os
 hits=[f for line in sys.stdin for f in json.loads(line).get("results",[]) if f["name"]==os.environ["NAME"]]
 print([p["label"] for f in hits for p in f["portions"]])')" "['1 mug']"
-status "the same label twice is refused"  409 -X POST "$BASE/foods/$OATS/portions" -H "$AUTH" -H 'content-type: application/json' -d '{"label":"1 cup","grams":90}'
+status "the same label twice is refused"  409 -X POST "$BASE/foods/$OATS/portions" -H "$AUTH" -H 'content-type: application/json' -d '{"label":"1 mug","grams":90}'
 status "a blank label is refused"         400 -X POST "$BASE/foods/$OATS/portions" -H "$AUTH" -H 'content-type: application/json' -d '{"label":"   ","grams":90}'
 status "a weightless portion is refused"  400 -X POST "$BASE/foods/$OATS/portions" -H "$AUTH" -H 'content-type: application/json' -d '{"label":"1 pinch","grams":0}'
 status "an unknown food has no portions"  404 -X POST "$BASE/foods/00000000-0000-0000-0000-000000000000/portions" -H "$AUTH" -H 'content-type: application/json' -d '{"label":"1 cup","grams":80}'
-CUP_ID=$(echo "$CUP" | j "['portions'][0]['id']")
+CUP_ID=$(echo "$CUP" | j " and [p['id'] for p in d['portions'] if p['source']=='user'][0]")
 expect "removing it returns the food without it" \
-  "$(curl -fsS -X DELETE "$BASE/foods/$OATS/portions/$CUP_ID" -H "$AUTH" | j "['portions']")" "[]"
+  "$(curl -fsS -X DELETE "$BASE/foods/$OATS/portions/$CUP_ID" -H "$AUTH" | j " and [p['label'] for p in d['portions'] if p['source']=='user']")" "[]"
 status "removing it twice is a 404"       404 -X DELETE "$BASE/foods/$OATS/portions/$CUP_ID" -H "$AUTH"
 
 # A provider's portions arrive with the import. USDA's own detail record is
@@ -255,6 +258,156 @@ expect "and never overwrites what a person typed" \
 expect "an import that brings none leaves them alone" \
   "$(curl -fsS -X POST "$BASE/foods/import" -H "$AUTH" -H 'content-type: application/json' \
       -d '{"source":"usda","source_id":"173944","name":"Bananas, raw","calories_kcal":89,"protein_g":1.09,"carbs_g":22.84,"fat_g":0.33,"serving_size_g":118}' | j " and len(d['portions'])")" "3"
+
+echo "== amounts people use"
+# "It's good to have the exact number, but we should also be able to insert how
+# many we're thinking." A portion says how much one of something weighs; this
+# is the count, and the words that go with it. Grams stay authoritative: the
+# server multiplies out, stores the weight, and snapshots what it was called.
+AMT_STAMP="$(date +%s)-$RANDOM"
+AMT_ROOT="${BASE%/api/v1}"
+
+# A name the bundled table knows arrives with the measures for it already on.
+BREAST=$(curl -fsS -X POST "$BASE/foods" -H "$AUTH" -H 'content-type: application/json' \
+  -d '{"name":"Chicken breast","calories_kcal":165,"protein_g":31,"carbs_g":0,"fat_g":3.6,"serving_size_g":100}')
+BREAST_ID=$(echo "$BREAST" | j "['id']")
+expect "a seeded food is created with its measures" \
+  "$(echo "$BREAST" | j " and [(p['label'], p['grams'], p['source']) for p in d['portions']]")" \
+  "[('1 breast', 174.0, 'usda'), ('1 half breast', 87.0, 'usda')]"
+expect "a food that merely mentions one gets none" \
+  "$(curl -fsS -X POST "$BASE/foods" -H "$AUTH" -H 'content-type: application/json' \
+      -d '{"name":"Chicken breast burrito","calories_kcal":210,"protein_g":12,"carbs_g":24,"fat_g":8}' | j "['portions']")" "[]"
+# An import that brings its own measures is not a food without any, so the
+# table stays out of it.
+expect "a food that already has portions is left alone" \
+  "$(curl -fsS -X POST "$BASE/foods/import" -H "$AUTH" -H 'content-type: application/json' \
+      -d "{\"source\":\"usda\",\"source_id\":\"egg-probe-$AMT_STAMP\",\"name\":\"Egg\",\"calories_kcal\":143,\"protein_g\":12.6,\"carbs_g\":0.7,\"fat_g\":9.5,\"serving_size_g\":50,\"portions\":[{\"label\":\"1 jumbo\",\"grams\":63}]}" \
+      | j " and [p['label'] for p in d['portions']]")" "['1 jumbo']"
+
+# Every food has something to pick even with no portions of its own: its own
+# serving, in a portion's shape, carrying the food's id so it can be counted
+# like any other measure.
+expect "the food's own serving is offered as a measure" \
+  "$(echo "$BREAST" | j " and (d['serving_portion']['id'] == d['id'], d['serving_portion']['grams'], d['serving_portion']['source'])")" \
+  "(True, 100.0, 'serving')"
+
+BREAST_PORTION=$(curl -fsS -X POST "$BASE/foods/$BREAST_ID/portions" -H "$AUTH" -H 'content-type: application/json' \
+  -d '{"label":"1 chicken breast","grams":174}' | j " and [p['id'] for p in d['portions'] if p['label']=='1 chicken breast'][0]")
+CUP_CHOPPED=$(curl -fsS -X POST "$BASE/foods/$BREAST_ID/portions" -H "$AUTH" -H 'content-type: application/json' \
+  -d '{"label":"1 cup, chopped","grams":140}' | j " and [p['id'] for p in d['portions'] if p['label']=='1 cup, chopped'][0]")
+
+# Two breasts: the grams are the server's arithmetic, and the phrase is the
+# server's too, so the diary, the recipe page and the export cannot drift.
+TWO=$(curl -fsS -X POST "$BASE/diary" -H "$AUTH" -H 'content-type: application/json' \
+  -d "{\"logged_on\":\"2026-02-10\",\"meal\":\"dinner\",\"food_id\":\"$BREAST_ID\",\"portion_id\":\"$BREAST_PORTION\",\"portion_count\":2}")
+TWO_ID=$(echo "$TWO" | j "['id']")
+expect "a count becomes grams"            "$(echo "$TWO" | j "['quantity_g']")" "348.0"
+expect "and keeps what was said"          "$(echo "$TWO" | j " and (d['portion_label'], d['portion_count'])")" "('1 chicken breast', 2.0)"
+expect "the entry says it in words"       "$(echo "$TWO" | j "['amount_label']")" "2 chicken breasts"
+expect "the calories follow the grams"    "$(echo "$TWO" | j "['nutrients']['calories_kcal']")" "574.2"
+expect "one of them is singular" \
+  "$(curl -fsS -X POST "$BASE/diary" -H "$AUTH" -H 'content-type: application/json' \
+      -d "{\"logged_on\":\"2026-02-10\",\"meal\":\"lunch\",\"food_id\":\"$BREAST_ID\",\"portion_id\":\"$BREAST_PORTION\",\"portion_count\":1}" | j "['amount_label']")" \
+  "1 chicken breast"
+expect "half of one reads as a half" \
+  "$(curl -fsS -X POST "$BASE/diary" -H "$AUTH" -H 'content-type: application/json' \
+      -d "{\"logged_on\":\"2026-02-10\",\"meal\":\"lunch\",\"food_id\":\"$BREAST_ID\",\"portion_id\":\"$BREAST_PORTION\",\"portion_count\":1.5}" | j " and (d['amount_label'], d['quantity_g'])")" \
+  "('1.5 chicken breasts', 261.0)"
+# USDA publishes descriptions, not names. "3 cup, choppeds" is not English, so
+# the count is shown as a multiplication instead of a guess.
+expect "a provider's label is multiplied, not pluralised" \
+  "$(curl -fsS -X POST "$BASE/diary" -H "$AUTH" -H 'content-type: application/json' \
+      -d "{\"logged_on\":\"2026-02-10\",\"meal\":\"lunch\",\"food_id\":\"$BREAST_ID\",\"portion_id\":\"$CUP_CHOPPED\",\"portion_count\":3}" | j " and (d['amount_label'], d['quantity_g'])")" \
+  "('3 × cup, chopped', 420.0)"
+# The food's own serving counts like any other measure.
+expect "the serving can be counted too" \
+  "$(curl -fsS -X POST "$BASE/diary" -H "$AUTH" -H 'content-type: application/json' \
+      -d "{\"logged_on\":\"2026-02-10\",\"meal\":\"lunch\",\"food_id\":\"$BREAST_ID\",\"portion_id\":\"$BREAST_ID\",\"portion_count\":2}" | j " and (d['amount_label'], d['quantity_g'])")" \
+  "('2 servings', 200.0)"
+expect "an amount with no measure still reads as a weight" \
+  "$(curl -fsS -X POST "$BASE/diary" -H "$AUTH" -H 'content-type: application/json' \
+      -d "{\"logged_on\":\"2026-02-10\",\"meal\":\"lunch\",\"food_id\":\"$BREAST_ID\",\"quantity_g\":348}" | j " and (d['amount_label'], d['portion_label'])")" \
+  "('348 g', None)"
+
+status "an amount cannot be both"        400 -X POST "$BASE/diary" -H "$AUTH" -H 'content-type: application/json' \
+  -d "{\"meal\":\"lunch\",\"food_id\":\"$BREAST_ID\",\"quantity_g\":100,\"portion_id\":\"$BREAST_PORTION\",\"portion_count\":2}"
+status "a count needs a measure to count" 400 -X POST "$BASE/diary" -H "$AUTH" -H 'content-type: application/json' \
+  -d "{\"meal\":\"lunch\",\"food_id\":\"$BREAST_ID\",\"portion_count\":2}"
+# A portion is a measure OF a food. Another food's is not a measure of this
+# one, however real it is.
+status "another food's measure is not this food's" 404 -X POST "$BASE/diary" -H "$AUTH" -H 'content-type: application/json' \
+  -d "{\"meal\":\"lunch\",\"food_id\":\"$OATS\",\"portion_id\":\"$BREAST_PORTION\",\"portion_count\":1}"
+status "and neither is an invented one"   404 -X POST "$BASE/diary" -H "$AUTH" -H 'content-type: application/json' \
+  -d "{\"meal\":\"lunch\",\"food_id\":\"$BREAST_ID\",\"portion_id\":\"00000000-0000-0000-0000-000000000000\",\"portion_count\":1}"
+
+# The point of snapshotting rather than pointing at the row: correcting the
+# measure changes what the NEXT meal works out to, and never what an old one
+# says. The person ate 348 g.
+curl -fsS -X DELETE "$BASE/foods/$BREAST_ID/portions/$BREAST_PORTION" -H "$AUTH" >/dev/null
+BREAST_PORTION=$(curl -fsS -X POST "$BASE/foods/$BREAST_ID/portions" -H "$AUTH" -H 'content-type: application/json' \
+  -d '{"label":"1 chicken breast","grams":200}' | j " and [p['id'] for p in d['portions'] if p['label']=='1 chicken breast'][0]")
+expect "correcting the measure leaves the meal alone" \
+  "$(curl -fsS "$BASE/diary/$TWO_ID" -H "$AUTH" | j " and (d['quantity_g'], d['amount_label'])")" \
+  "(348.0, '2 chicken breasts')"
+expect "and the next meal uses the new figure" \
+  "$(curl -fsS -X POST "$BASE/diary" -H "$AUTH" -H 'content-type: application/json' \
+      -d "{\"logged_on\":\"2026-02-11\",\"meal\":\"dinner\",\"food_id\":\"$BREAST_ID\",\"portion_id\":\"$BREAST_PORTION\",\"portion_count\":2}" | j "['quantity_g']")" \
+  "400.0"
+
+# Editing an entry: a new count re-measures it, and grams typed by hand say
+# the phrase no longer describes what is there.
+expect "an entry can be re-counted" \
+  "$(curl -fsS -X PATCH "$BASE/diary/$TWO_ID" -H "$AUTH" -H 'content-type: application/json' \
+      -d "{\"portion_id\":\"$BREAST_PORTION\",\"portion_count\":3}" | j " and (d['amount_label'], d['quantity_g'])")" \
+  "('3 chicken breasts', 600.0)"
+expect "typing grams clears the phrase" \
+  "$(curl -fsS -X PATCH "$BASE/diary/$TWO_ID" -H "$AUTH" -H 'content-type: application/json' \
+      -d '{"quantity_g":300}' | j " and (d['amount_label'], d['portion_label'], d['portion_count'])")" \
+  "('300 g', None, None)"
+status "an edit cannot be both, either"  400 -X PATCH "$BASE/diary/$TWO_ID" -H "$AUTH" -H 'content-type: application/json' \
+  -d "{\"quantity_g\":300,\"portion_id\":\"$BREAST_PORTION\"}"
+# Copying a day copies the amounts as they were, words included.
+curl -fsS -X POST "$BASE/diary/copy" -H "$AUTH" -H 'content-type: application/json' \
+  -d '{"from_date":"2026-02-11","to_date":"2026-02-12","meal":"dinner"}' >/dev/null
+expect "a copied day still says how many" \
+  "$(curl -fsS "$BASE/diary?from=2026-02-12&to=2026-02-12&meal=dinner" -H "$AUTH" | j " and [e['amount_label'] for e in d]")" \
+  "['2 chicken breasts']"
+
+# An ingredient is written the same way, and carries the phrase everywhere the
+# recipe goes: the recipe itself, the Markdown card, and the page a stranger
+# opens.
+AREC=$(curl -fsS -X POST "$BASE/recipes" -H "$AUTH" -H 'content-type: application/json' -d "{
+  \"name\":\"Traybake $AMT_STAMP\",\"servings\":2,\"is_public\":true,
+  \"items\":[{\"food_id\":\"$BREAST_ID\",\"portion_id\":\"$BREAST_PORTION\",\"portion_count\":2},
+             {\"food_id\":\"$OATS\",\"quantity_g\":50}]}")
+AREC_ID=$(echo "$AREC" | j "['id']")
+AREC_SLUG=$(echo "$AREC" | j "['slug']")
+expect "an ingredient can be counted too" \
+  "$(echo "$AREC" | j " and [(i['amount_label'], i['quantity_g']) for i in d['items']]")" \
+  "[('2 chicken breasts', 400.0), ('50 g', 50.0)]"
+expect "and the totals are the grams it came to" "$(echo "$AREC" | j "['total_weight_g']")" "450.0"
+status "an ingredient cannot be both"    400 -X POST "$BASE/recipes" -H "$AUTH" -H 'content-type: application/json' \
+  -d "{\"name\":\"x\",\"servings\":1,\"items\":[{\"food_id\":\"$BREAST_ID\",\"quantity_g\":100,\"portion_id\":\"$BREAST_PORTION\"}]}"
+status "nor measure a sub-recipe in portions" 400 -X POST "$BASE/recipes" -H "$AUTH" -H 'content-type: application/json' \
+  -d "{\"name\":\"x\",\"servings\":1,\"items\":[{\"sub_recipe_id\":\"$AREC_ID\",\"servings\":1,\"portion_id\":\"$BREAST_PORTION\"}]}"
+status "a recipe is logged in servings, not measures" 400 -X POST "$BASE/diary" -H "$AUTH" -H 'content-type: application/json' \
+  -d "{\"meal\":\"lunch\",\"recipe_id\":\"$AREC_ID\",\"portion_id\":\"$BREAST_PORTION\",\"portion_count\":1}"
+status "nor use another food's measure"  400 -X POST "$BASE/recipes" -H "$AUTH" -H 'content-type: application/json' \
+  -d "{\"name\":\"x\",\"servings\":1,\"items\":[{\"food_id\":\"$OATS\",\"portion_id\":\"$BREAST_PORTION\",\"portion_count\":1}]}"
+expect "the card reads the way the recipe does" \
+  "$(curl -fsS "$BASE/recipes/$AREC_ID/export?format=markdown" -H "$AUTH" | grep -c '^- 2 chicken breasts Chicken breast$')" "1"
+expect "and the file carries the words as well as the grams" \
+  "$(curl -fsS "$BASE/recipes/$AREC_ID/export" -H "$AUTH" | j " and [(i['portion_label'], i['portion_count'], i['quantity_g']) for i in d['recipe']['items'] if i['portion_label']]")" \
+  "[('1 chicken breast', 2.0, 400.0)]"
+APAGE=$(curl -fsS "$AMT_ROOT/r/$AREC_SLUG")
+expect "the shared page shows the phrase" \
+  "$(echo "$APAGE" | grep -c '<span class="amount">2 chicken breasts</span>')" "1"
+# What other people's importers read off the page, and what ours reads back.
+ALD=$(echo "$APAGE" | sed -n 's|.*<script type="application/ld+json">\(.*\)</script>.*|\1|p')
+expect "and so does its structured data" \
+  "$(echo "$ALD" | j "['recipeIngredient']")" \
+  "['2 chicken breasts Chicken breast', '50 g Rolled oats']"
+curl -fsS -X DELETE "$BASE/recipes/$AREC_ID" -H "$AUTH" >/dev/null
 
 echo "== recipes"
 # 100g oats (379) + 300g milk (183) + 118g banana (105.02) = 667.02 over 2 servings
@@ -1381,6 +1534,18 @@ LOG=$(mcp "$MWKEY" tools/call '{"name":"log_food","arguments":{"text":"2 bananas
 expect "log_food resolves a count to grams" "$(echo "$LOG" | j "['result']['structuredContent']['items'][0]['grams']")" "236.0"
 expect "and reports the calories"           "$(echo "$LOG" | j "['result']['structuredContent']['total_kcal']")" "210.04"
 expect "without writing anything"           "$(echo "$LOG" | j "['result']['structuredContent']['logged']")" "False"
+# A count in words goes through the food's own measures, and the entry the
+# tool writes keeps them: "2 slices" is a slice of this bread, twice.
+LOAF=$(curl -fsS -X POST "$BASE/foods" -H "$AUTH" -H 'content-type: application/json' \
+  -d "{\"name\":\"Portionloaf $AMT_STAMP\",\"calories_kcal\":265,\"protein_g\":9,\"carbs_g\":49,\"fat_g\":3.2,\"serving_size_g\":100}" | j "['id']")
+curl -fsS -X POST "$BASE/foods/$LOAF/portions" -H "$AUTH" -H 'content-type: application/json' \
+  -d '{"label":"1 slice","grams":28}' >/dev/null
+SLICES=$(mcp "$MWKEY" "tools/call" "{\"name\":\"log_food\",\"arguments\":{\"text\":\"2 slices of Portionloaf $AMT_STAMP\",\"meal\":\"snack\",\"date\":\"2026-01-16\",\"confirm\":true}}")
+expect "log_food counts a household measure" \
+  "$(echo "$SLICES" | j "['result']['structuredContent']['items'][0]['amount']")" "2 slices"
+expect "and it reaches the diary as one" \
+  "$(echo "$SLICES" | j " and (d['result']['structuredContent']['entries'][0]['amount_label'], d['result']['structuredContent']['entries'][0]['quantity_g'])")" \
+  "('2 slices', 56.0)"
 expect "a read key is refused a write tool" \
   "$(mcp "$MRKEY" tools/call '{"name":"log_food","arguments":{"text":"banana","meal":"snack"}}' | j "['result']['isError']")" "True"
 expect "the guide resource reads back" \
