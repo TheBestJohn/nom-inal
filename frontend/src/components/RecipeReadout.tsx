@@ -2,8 +2,8 @@ import type { ReactNode } from 'react'
 import { Link } from 'react-router-dom'
 import { ExternalLink } from 'lucide-react'
 
-import type { Nutrients, Recipe } from '@/api/types'
-import { grams, kcal, round } from '@/lib/format'
+import type { Nutrients, Recipe, RecipeItem } from '@/api/types'
+import { amountParts, grams, kcal, round } from '@/lib/format'
 import { instructionSteps } from '@/lib/recipeText'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Empty, MacroRow } from '@/components/shared'
@@ -65,6 +65,24 @@ export function NutritionCard({
         )}
       </CardContent>
     </Card>
+  )
+}
+
+/**
+ * How much of an ingredient, as it was entered: "2 chicken breasts", with
+ * "348 g" under it.
+ *
+ * Both, because a cook wants the one they can count out at the counter and
+ * the one the scale agrees with. The phrase comes from the server, already
+ * pluralised; a weight typed as a weight says itself once and stops.
+ */
+function ItemAmount({ item }: { item: RecipeItem }) {
+  const { phrase, weight } = amountParts(item, item.name, '')
+  return (
+    <>
+      {phrase && <span className="block">{phrase}</span>}
+      {weight && <span className="block text-xs opacity-80">{weight}</span>}
+    </>
   )
 }
 
@@ -147,12 +165,20 @@ export default function RecipeReadout({
                   key={item.id}
                   className="grid grid-cols-[auto_1fr] items-baseline gap-x-3 gap-y-0.5 py-2.5 sm:grid-cols-[6rem_1fr_auto]"
                 >
-                  <span className="text-muted-foreground tabular min-w-14 text-sm whitespace-nowrap sm:min-w-0 sm:text-right">
-                    {item.label
-                      ? ''
-                      : item.sub_recipe_id
-                        ? `${round(item.servings ?? 0, 2)} serving${item.servings === 1 ? '' : 's'}`
-                        : grams(item.quantity_g, 0)}
+                  {/* Capped rather than left to size itself: "2 chicken
+                      breasts" in an `auto` column took the width off the
+                      ingredient beside it, which is the one thing this row
+                      has to say. Past the cap the phrase wraps instead. */}
+                  <span className="text-muted-foreground tabular max-w-28 min-w-14 text-sm sm:min-w-0 sm:text-right">
+                    {item.label ? (
+                      ''
+                    ) : item.sub_recipe_id ? (
+                      <span className="whitespace-nowrap">
+                        {round(item.servings ?? 0, 2)} serving{item.servings === 1 ? '' : 's'}
+                      </span>
+                    ) : (
+                      <ItemAmount item={item} />
+                    )}
                   </span>
                   <span className="min-w-0" data-ingredient-name>
                     {item.sub_recipe_id && subRecipeHref ? (

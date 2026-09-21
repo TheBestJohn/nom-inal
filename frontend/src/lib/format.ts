@@ -175,3 +175,82 @@ const FIELD_LABELS: Record<string, string> = {
 }
 
 export const fieldLabel = (field: string) => FIELD_LABELS[field] ?? field
+
+/**
+ * How much of something was logged, as the server already said it.
+ *
+ * `amount_label` is the phrase — "2 chicken breasts", "1 cup, chopped",
+ * "348 g" when no portion was used — pluralised by the server so every
+ * client says it the same way. It is never assembled here: pluralising a
+ * label in the browser is how "2 slice of breads" happens, and two clients
+ * doing it separately is how they come to disagree.
+ *
+ * The fields are optional because an older server does not send them, and
+ * because this app talks to whatever is deployed. Without them the phrase
+ * falls back to the gram figure, which is exactly what the diary said
+ * before there were portions.
+ */
+export interface AmountLike {
+  quantity_g?: number | null
+  amount_label?: string | null
+  portion_label?: string | null
+  portion_count?: number | null
+}
+
+export const amountLabel = (row: AmountLike, fallback = '—') =>
+  row.amount_label?.trim() ||
+  (row.quantity_g === null || row.quantity_g === undefined ? fallback : grams(row.quantity_g, 0))
+
+/**
+ * A name reduced to the words in it, singular, for comparing one against
+ * another: "Chicken breast fillet, skinless" and "chicken breasts" both start
+ * "chicken breast".
+ */
+const nameWords = (s: string) =>
+  s
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim()
+    .split(' ')
+    .filter(Boolean)
+    .map((w) => (w.length > 3 ? w.replace(/s$/, '') : w))
+
+/** Whether one name is already inside the other, word for word and in order. */
+function namesOverlap(label: string, name: string) {
+  const a = nameWords(label)
+  const b = nameWords(name)
+  if (a.length === 0 || b.length === 0) return false
+  const [short, long] = a.length <= b.length ? [a, b] : [b, a]
+  for (let i = 0; i + short.length <= long.length; i++) {
+    if (short.every((w, j) => long[i + j] === w)) return true
+  }
+  return false
+}
+
+/**
+ * The phrase and the weight, for the places that show both — "2 chicken
+ * breasts · 348 g". The user asked for the count *and* the exact number, so
+ * `weight` is null only when the phrase already is the number and repeating
+ * it would read "348 g · 348 g".
+ *
+ * Pass the food's name and the phrase will not say it twice. A portion is
+ * very often the food itself — "chicken breast" of "Chicken breast fillet,
+ * skinless" — and the phrase sits beside that name in every row that shows
+ * it, which reads "2 chicken breasts Chicken breast fillet". Where the label
+ * is already in the name, the count alone carries it: "×2", against a name
+ * that is right there. Where it adds something — "1/3 cup" of basmati rice —
+ * the whole phrase stays.
+ */
+export function amountParts(row: AmountLike, name?: string, fallback = '—') {
+  const usedPortion = row.portion_count !== null && row.portion_count !== undefined
+  const label = row.portion_label?.trim()
+  const phrase =
+    usedPortion && label && name && namesOverlap(label, name)
+      ? `×${round(row.portion_count!, 2)}`
+      : amountLabel(row, fallback)
+  const weight =
+    usedPortion && row.quantity_g !== null && row.quantity_g !== undefined
+      ? grams(row.quantity_g, 0)
+      : null
+  return { phrase, weight }
+}

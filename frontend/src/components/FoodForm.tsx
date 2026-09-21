@@ -40,15 +40,22 @@ function PortionsEditor({
 }) {
   const [label, setLabel] = useState('')
   const [weight, setWeight] = useState('')
+  // A duplicate used to be dropped in silence: the button was enabled, it was
+  // pressed, and nothing happened. It says so now.
+  const [note, setNote] = useState<string | null>(null)
 
   const add = () => {
     const name = label.trim()
     const value = Number(weight)
     if (!name || !(value > 0)) return
-    if (portions.some((p) => p.label.toLowerCase() === name.toLowerCase())) return
+    if (portions.some((p) => p.label.toLowerCase() === name.toLowerCase())) {
+      setNote(`“${name}” is already on this food.`)
+      return
+    }
     onChange([...portions, { label: name, grams: value, source: 'user' }])
     setLabel('')
     setWeight('')
+    setNote(null)
   }
 
   return (
@@ -84,10 +91,15 @@ function PortionsEditor({
       )}
       <div className="grid grid-cols-[1fr_6rem_auto] gap-2">
         <Input
-          placeholder="1 cup, 1 slice, 1 mug…"
+          // Without the one in front: the amount box puts a count beside
+          // this, where "2  1 cup" reads badly.
+          placeholder="cup, slice, mug…"
           aria-label="Portion label"
           value={label}
-          onChange={(e) => setLabel(e.target.value)}
+          onChange={(e) => {
+            setLabel(e.target.value)
+            setNote(null)
+          }}
           onKeyDown={(e) => {
             if (e.key === 'Enter') {
               e.preventDefault()
@@ -121,9 +133,11 @@ function PortionsEditor({
           <Plus /> Add
         </Button>
       </div>
+      {note && <p className="text-destructive text-xs">{note}</p>}
       <p className="text-muted-foreground text-xs">
-        How many grams a cup, a slice or a mug of this is. Offered beside grams when logging; the
-        entry itself is still grams.
+        How many grams a cup, a slice or a mug of this is. These are the units the amount box offers
+        when this food is logged — “2 chicken breasts”, with the weight worked out beside it. One
+        can also be added while logging, without coming back here.
       </p>
     </div>
   )

@@ -3,6 +3,7 @@ import { ArrowLeft, Check, Search } from 'lucide-react'
 
 import type { DraftCandidate, DraftLine, Food, RecipeDraft } from '@/api/types'
 import { foodItem, textItem, type DraftItem } from '@/lib/recipeDraft'
+import { GRAMS } from '@/lib/amounts'
 import { round } from '@/lib/format'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
@@ -157,7 +158,10 @@ export default function RecipeImportReview({
               carbs_g: choice.food.carbs_g,
               fat_g: choice.food.fat_g,
             },
-            Number(choice.grams),
+            // An imported line already resolved to a weight — "200 g of
+            // chicken" — so it arrives in grams. The measures are there in
+            // the editor for anyone who would rather count them.
+            { measure: GRAMS, count: String(Number(choice.grams)) },
           ),
         )
       } else if (choice.kind === 'text' && choice.text.trim()) {

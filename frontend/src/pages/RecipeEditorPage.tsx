@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   ArrowLeft,
   ExternalLink,
@@ -17,11 +17,19 @@ import {
 
 import { api } from '@/api/endpoints'
 import type { RecipeInput } from '@/api/endpoints'
-import type { Food, Nutrients, Recipe, RecipeDraft, RecipeSummary } from '@/api/types'
+import type { Food, FoodDetail, Nutrients, Recipe, RecipeDraft, RecipeSummary } from '@/api/types'
 import { withNetCarbs } from '@/lib/nutrients'
 import { grams, kcal } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import { ZERO, foodItem, recipeItem, textItem, type DraftItem } from '@/lib/recipeDraft'
+import {
+  amountGrams,
+  amountRequest,
+  defaultAmount,
+  resolveAmount,
+  savedAmount,
+} from '@/lib/amounts'
+import AmountField from '@/components/AmountField'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Card, CardAction, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -323,6 +331,10 @@ export default function RecipeEditorPage() {
         const amount = item.quantity_g ?? item.servings ?? 1
         return {
           key: item.id,
+          // What the server says this was counted in, believed as sent. The
+          // portion it names is attached to the food's real measures below,
+          // once the foods themselves have been fetched.
+          said: savedAmount(item),
           kind: item.label
             ? ('text' as const)
             : item.sub_recipe_id
@@ -348,6 +360,38 @@ export default function RecipeEditorPage() {
     if (existing.data) hydrate(existing.data)
   }, [existing.data])
 
+  // An ingredient row says a name and a weight; the units that weight could
+  // be said in live on the food. A saved recipe therefore has to fetch its
+  // foods before its rows can offer anything but grams — cached under the
+  // same key the food dialog uses, so this is usually free.
+  const foodIds = [
+    ...new Set(
+      (existing.data?.items ?? []).map((i) => i.food_id).filter((id): id is string => id !== null),
+    ),
+  ]
+  const foodQueries = useQueries({
+    queries: foodIds.map((id) => ({ queryKey: ['foods', id], queryFn: () => api.getFood(id) })),
+  })
+  const foods = new Map<string, FoodDetail>()
+  for (const query of foodQueries) if (query.data) foods.set(query.data.id, query.data)
+  const loaded = [...foods.keys()].sort().join(',')
+
+  // Attach the saved amounts to the measures that just arrived, without
+  // touching anything else: re-hydrating here would throw away whatever had
+  // been typed while the foods were in flight.
+  useEffect(() => {
+    if (!loaded) return
+    setItems((prev) =>
+      prev.map((item) =>
+        item.kind === 'food'
+          ? { ...item, said: resolveAmount(item.said, foods.get(item.refId)) }
+          : item,
+      ),
+    )
+    // Keyed on which foods have arrived, deliberately: naming the map here
+    // would re-run this on every render, and the map is rebuilt each time.
+  }, [loaded])
+
   const save = useMutation({
     mutationFn: () => {
       const payload: RecipeInput = {
@@ -357,7 +401,7 @@ export default function RecipeEditorPage() {
         servings: Number(servings),
         is_public: isPublic,
         items: items.map((i) => {
-          if (i.kind === 'food') return { food_id: i.refId, quantity_g: i.amount }
+          if (i.kind === 'food') return { food_id: i.refId, ...amountRequest(i.said) }
           if (i.kind === 'recipe') return { sub_recipe_id: i.refId, servings: i.amount }
           return { label: i.name }
         }),
@@ -410,7 +454,7 @@ export default function RecipeEditorPage() {
   const untracked = Math.max(untrackedHere, existing.data?.untracked_count ?? 0)
 
   const addFood = (food: Food, suggested?: number) => {
-    setItems((prev) => [...prev, foodItem(food, suggested ?? food.serving_size_g)])
+    setItems((prev) => [...prev, foodItem(food, defaultAmount(food, suggested))])
     setPicking(false)
   }
 
@@ -657,16 +701,17 @@ export default function RecipeEditorPage() {
                       <span className="text-muted-foreground w-[10.5rem] text-right text-xs">
                         not counted
                       </span>
-                    ) : (
+                    ) : item.kind === 'recipe' ? (
                       <>
                         <Input
                           type="number"
-                          min={item.kind === 'recipe' ? 0.01 : 0.1}
+                          min={0.01}
                           step="any"
                           inputMode="decimal"
                           className="tabular w-24 text-right"
-                          aria-label={`${item.name} ${item.kind === 'recipe' ? 'servings' : 'grams'}`}
+                          aria-label={`${item.name} servings`}
                           value={item.amount}
+                          onFocus={(e) => e.currentTarget.select()}
                           onChange={(e) =>
                             setItems((prev) =>
                               prev.map((it, i) =>
@@ -675,10 +720,32 @@ export default function RecipeEditorPage() {
                             )
                           }
                         />
-                        <span className="text-muted-foreground w-12 text-xs">
-                          {item.kind === 'recipe' ? 'servings' : 'g'}
-                        </span>
+                        <span className="text-muted-foreground w-12 text-xs">servings</span>
                         <span className="text-muted-foreground tabular ml-auto w-20 text-right text-xs sm:ml-0">
+                          {kcal(item.perUnit.calories_kcal * item.amount)}
+                        </span>
+                      </>
+                    ) : (
+                      <>
+                        {/* The same control as the diary's, so "two chicken
+                            breasts" means the same thing in a recipe as it
+                            does in a meal — and the weight it comes to is
+                            what the totals below are still made of. */}
+                        <AmountField
+                          food={foods.get(item.refId) ?? { id: item.refId, name: item.name }}
+                          value={item.said}
+                          idPrefix={`ingredient-${index}`}
+                          label={null}
+                          compact
+                          onChange={(said) =>
+                            setItems((prev) =>
+                              prev.map((it, i) =>
+                                i === index ? { ...it, said, amount: amountGrams(said) ?? 0 } : it,
+                              ),
+                            )
+                          }
+                        />
+                        <span className="text-muted-foreground tabular w-20 shrink-0 text-right text-xs">
                           {kcal(item.perUnit.calories_kcal * item.amount)}
                         </span>
                       </>

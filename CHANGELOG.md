@@ -89,6 +89,63 @@ section and know what to update.
   it is in, no two parts of a row overlap and every control is big enough to
   hit.
 
+### Amounts people actually use — on screen
+
+- **An amount is a count and a unit now**, not a gram figure. The add-food
+  dialog has a count box beside a unit selector listing the food's household
+  portions ("chicken breast · 174 g"), its own `serving_portion`, and grams —
+  and under it, always, the weight that comes to: `2 × 174 g = 348 g`. Nobody
+  weighs a chicken breast, but everybody wants to know what two of them came
+  to, so both are on screen. Picking grams gives back exactly the box that was
+  there before.
+- **The same control everywhere an amount is entered**: the add dialog, the
+  recipe editor's ingredient rows, and diary entries — which can now be
+  edited at all. Tapping an entry reopens its amount instead of making you
+  delete the row and log the food again. Saving an entry in grams sends
+  `quantity_g` and the phrase goes with it; saving it by a measure sends
+  `{portion_id, portion_count}` and the phrase is re-measured, which is what
+  the unit selector means when it is moved.
+- **Where a food has no portions, one can be made without leaving the flow.**
+  The unit list ends in "Add a measure…", which asks how much one chicken
+  breast is, saves it on the food and selects it. That is what turns portions
+  from a settings page nobody fills in into something that gets filled in
+  while logging.
+- **Amounts read back the way they were entered.** The diary rows and both
+  recipe views show the phrase the server sends — "2 chicken breasts" — with
+  the weight beside it: `2 chicken breasts · 348 g`. The phrase is never
+  assembled in the browser, so every client pluralises a label the same way,
+  and a client talking to an older server falls back to the gram figure.
+- A portion is very often the food said again — "chicken breast" of "Chicken
+  breast fillet, skinless" — so the phrase never sits immediately beside the
+  food's own name repeating it. Where a row puts the two on one line, which
+  is the recipe's ingredient list, a label already inside the name collapses
+  to the count: `×2 / 348 g  Chicken breast fillet, skinless`. Where the name
+  is the row's title on a line of its own, which is the diary, the amount
+  line keeps the whole phrase, because it has to read on its own. A leading
+  "1 " comes off a unit in the selector — the count beside it is the number,
+  so "1 serving" is offered as "serving"; a fraction keeps its one.
+- Which unit a food opens on: a portion someone typed in for it, else its
+  serving when that is named, else a portion its provider supplied, else
+  grams. Logging something again keeps the exact weight it was logged at, and
+  says it as a count when one divides it evenly.
+- A count box that already holds a 1 is how typing 2 gives 12. The first
+  digit typed into an untouched box replaces what is in it — only the first,
+  and only a digit, so correcting a number you can see behaves like any other
+  box. Selecting the text on focus is the usual trick for this and does not
+  survive the click that gave it focus: the browser places the caret itself,
+  after the event has been dispatched. A leading zero is dropped as it is
+  typed, rather than turning 140 into 0140.
+- The food form's portions editor says what portions are for now that they
+  are the units the amount box offers, and a duplicate label is refused out
+  loud instead of being dropped in silence.
+- `scripts/mobile-layout.mjs` covers the control at both phone widths in both
+  themes: the count and the unit are thumb-sized, the dialog stays on screen,
+  the computed weight is visible, a two-digit count types as itself, the
+  "how much is one" form starts empty and saves into the selector, and the
+  diary row reads back whatever phrase the server sent for it — read from the
+  API rather than written out in the suite, because the wording is the
+  server's to decide.
+
 ## v0.3.0 — 2026-09-20
 
 ### Why are you tracking?
