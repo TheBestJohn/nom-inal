@@ -15,6 +15,12 @@
 // five-step method, a photo, and every nutrient switched on — because the
 // layouts only break on the content nobody uses in a demo.
 //
+// It also covers the amount control: a count beside a unit is two more things
+// competing for the same 280 pixels, and the weight it works out is the
+// figure people came for. So a food with a household portion is logged by the
+// portion, and the dialog, the diary row and the editor row are all measured
+// with it in them.
+//
 // Usage:
 //   node scripts/mobile-layout.mjs [--api URL] [--web URL] [--shots DIR]
 //
@@ -270,6 +276,28 @@ async function fixture() {
   })
   if (!shot.ok) throw new Error(`photo -> ${shot.status} ${await shot.text()}`)
 
+  // The food the whole feature is for: nobody weighs a chicken breast, they
+  // count them. Two of these is 348 g, and both halves of that have to fit.
+  const chicken = await food({
+    name: 'Chicken breast fillet, skinless and boneless, raw',
+    brand: 'Ballymaloe Free Range Poultry Company',
+    serving_size_g: 100,
+    calories_kcal: 120,
+    protein_g: 22.5,
+    carbs_g: 0,
+    fat_g: 2.6,
+    fiber_g: 0,
+    sugar_g: 0,
+    saturated_fat_g: 0.8,
+    sodium_mg: 63,
+  })
+  const withPortion = await call(`/foods/${chicken.id}/portions`, {
+    method: 'POST',
+    token,
+    body: { label: 'chicken breast', grams: 174 },
+  })
+  const breast = withPortion.portions.find((p) => p.label === 'chicken breast')
+
   const now = new Date()
   const date = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
   for (const entry of [
@@ -280,7 +308,65 @@ async function fixture() {
     await call('/diary', { method: 'POST', token, body: { logged_on: date, ...entry } })
   }
 
-  return { token, recipeId: recipe.id }
+  // Two of them, said as two of them. A server that does not take amounts
+  // that way gets the weight instead, and the row is then asserted to say
+  // the weight — the phrase is whatever the server sends back either way,
+  // which is the whole point: the client never composes it.
+  try {
+    await call('/diary', {
+      method: 'POST',
+      token,
+      body: {
+        logged_on: date,
+        meal: 'dinner',
+        food_id: chicken.id,
+        portion_id: breast.id,
+        portion_count: 2,
+      },
+    })
+  } catch {
+    await call('/diary', {
+      method: 'POST',
+      token,
+      body: { logged_on: date, meal: 'dinner', food_id: chicken.id, quantity_g: 348 },
+    })
+  }
+
+  // A food with nothing to count it in, for the path that adds one. Named so
+  // no seeded measure matches it: the whole point is a food that has none.
+  const burrito = await food({
+    name: 'Chicken breast burrito, shop bought and frozen',
+    serving_size_g: 220,
+    calories_kcal: 198,
+    protein_g: 9.4,
+    carbs_g: 24.1,
+    fat_g: 7.2,
+  })
+  await call('/diary', {
+    method: 'POST',
+    token,
+    body: { logged_on: date, meal: 'snack', food_id: burrito.id, quantity_g: 220 },
+  })
+
+  // What the row should read, taken from the server rather than written out
+  // here — an `amount_label` is the server's to word, and a suite that spells
+  // it out itself would be asserting its own opinion of the phrasing.
+  const day = await call(`/diary/day?date=${date}`, { token })
+  const logged = day.meals
+    .flatMap((m) => m.entries)
+    .find((e) => e.food_id === chicken.id)
+  const said =
+    logged.portion_count != null
+      ? `${logged.amount_label} · ${Math.round(logged.quantity_g)} g`
+      : logged.amount_label
+
+  return {
+    token,
+    recipeId: recipe.id,
+    chicken: chicken.name,
+    burrito: burrito.name,
+    said,
+  }
 }
 
 // ------------------------------------------------------------- the assertions
@@ -413,7 +499,7 @@ const VIEWPORTS = [
 ]
 const THEMES = ['light', 'dark']
 
-const { token, recipeId } = await fixture()
+const { token, recipeId, chicken, burrito, said } = await fixture()
 mkdirSync(SHOTS, { recursive: true })
 
 const browser = await chromium.launch({
@@ -536,11 +622,21 @@ for (const viewport of VIEWPORTS) {
         (await page.locator('#r-name').boundingBox()).width >= (phone ? 140 : 300),
         'editor: the name box is wide enough to type in',
       )
-      const amount = await page.locator('input[aria-label$="grams"]').first().boundingBox()
+      const amount = await page.locator('#ingredient-0-count').boundingBox()
       check(
-        amount.width >= 80,
-        'editor: the amount box fits a number',
-        `${Math.round(amount.width)}px`,
+        amount.width >= 56 && amount.height >= (phone ? 40 : 32),
+        'editor: the count box fits a number and a thumb',
+        `${Math.round(amount.width)}x${Math.round(amount.height)}`,
+      )
+      const unit = await page.locator('[aria-label="Unit"]').first().boundingBox()
+      check(
+        unit.width >= 80 && unit.height >= (phone ? 40 : 32),
+        'editor: the unit selector is readable and tappable',
+        `${Math.round(unit.width)}x${Math.round(unit.height)}`,
+      )
+      check(
+        (await page.locator('[data-amount-weight]').first().innerText()).includes('g'),
+        'editor: every ingredient row still says its weight',
       )
       // The thing the old row lost entirely: which ingredient a line is.
       const names = await page.$$eval('ul.divide-y > li > div:first-child', (els) =>
@@ -591,7 +687,162 @@ for (const viewport of VIEWPORTS) {
       // Direct children only: the day card's "I logged everything" switch is
       // inside the label that is the thing you actually tap.
       if (phone) await tappable(page, 'diary', '[data-slot="card-action"] > button')
+
+      // The point of the whole thing: the row says how much in the words it
+      // was entered in, with the weight still beside it.
+      const shown = await page.$$eval('[data-entry-amount]', (els) =>
+        els.map((el) => el.textContent.trim()),
+      )
+      check(
+        shown.some((t) => t.includes(said)),
+        `diary: the entry row reads "${said}"`,
+        shown.join(' | '),
+      )
+      // The amount is also the way back into it, so the whole left side of
+      // the row is the target rather than a fifth icon on a full line.
+      if (phone) await tappable(page, 'diary entry', 'li > [aria-label^="Edit "]', 36)
     })
+
+    // The amount control, in the dialog it is mostly used in.
+    //
+    // Everything here is one screen wide: a count, a unit that has to spell
+    // out a household measure, the weight it works out, and the macros under
+    // that. A recent food comes pre-filled with the amount it was logged at
+    // last time, which for this one is two of them.
+    const openAmount = async (page, food = chicken) => {
+      await page.goto(`${WEB}/diary`, { waitUntil: 'networkidle' })
+      await touchReady(page)
+      await page.waitForSelector('text=Dinner')
+      // Dinner: breakfast, lunch, dinner, snack, in that order.
+      await page.getByRole('button', { name: 'Add', exact: true }).nth(2).click()
+      await page.waitForSelector('[data-slot="dialog-content"]')
+      // Inside the dialog: the diary row behind it is a button with the same
+      // name on it now, and the overlay was swallowing the click.
+      await page
+        .locator(`[data-slot="dialog-content"] button:has-text("${food}")`)
+        .first()
+        .click()
+      await page.waitForSelector('#amount-count')
+      await page.waitForTimeout(250)
+    }
+
+    await scene(
+      'amount',
+      async (page) => {
+        await openAmount(page)
+        await noSideScroll(page, 'amount control')
+        await within(page, 'amount control', '[data-slot="dialog-content"]', 'dialog')
+        const dialog = await page.locator('[data-slot="dialog-content"]').boundingBox()
+        check(
+          dialog.x >= -1 && dialog.x + dialog.width <= viewport.width + 1,
+          'amount control: the dialog is inside the screen',
+          `${Math.round(dialog.x)}..${Math.round(dialog.x + dialog.width)}`,
+        )
+
+        const min = phone ? 40 : 32
+        const count = await page.locator('#amount-count').boundingBox()
+        check(
+          count.width >= 56 && count.height >= min,
+          'amount control: the count box is tappable',
+          `${Math.round(count.width)}x${Math.round(count.height)}`,
+        )
+        const unit = await page.locator('[aria-label="Unit"]').boundingBox()
+        check(
+          unit.width >= 90 && unit.height >= min,
+          'amount control: the unit selector is tappable',
+          `${Math.round(unit.width)}x${Math.round(unit.height)}`,
+        )
+
+        // The exact number, which is the thing the grams were kept for.
+        const weight = page.locator('[data-amount-weight]')
+        check(await weight.isVisible(), 'amount control: the weight is on screen')
+        const shown = (await weight.innerText()).trim()
+        check(
+          shown.includes('348 g'),
+          'amount control: two of them comes to 348 g',
+          `${await page.locator('#amount-count').inputValue()} → ${shown}`,
+        )
+
+        // A box that already holds a 1 is how "2" becomes "12". Typing a
+        // two-digit count has to give that count and nothing else.
+        await page.locator('#amount-count').click()
+        await page.locator('#amount-count').pressSequentially('12', { delay: 40 })
+        const typed = await page.locator('#amount-count').inputValue()
+        check(typed === '12', 'amount control: a two-digit count types as itself', typed)
+        check(
+          (await weight.innerText()).includes('2,088 g') ||
+            (await weight.innerText()).includes('2088 g'),
+          'amount control: the weight follows what was typed',
+          await weight.innerText(),
+        )
+        await page.locator('#amount-count').fill('2')
+      },
+      false,
+    )
+
+    // Saying how much one of something is, without leaving the dialog. On the
+    // food that has none: most foods have none, and a measure nobody can add
+    // while logging is a settings page nobody fills in.
+    await scene(
+      'measure',
+      async (page) => {
+        await openAmount(page, burrito)
+        await page.locator('[aria-label="Unit"]').click()
+        await page.waitForSelector('[data-slot="select-item"]')
+        await page.waitForTimeout(250)
+        const items = await page.$$eval('[data-slot="select-item"]', (els) =>
+          els.map((el) => el.getBoundingClientRect()),
+        )
+        check(
+          items.every((r) => r.left >= -1 && r.right <= viewport.width + 1),
+          'amount control: the unit list opens on screen',
+          items.map((r) => `${Math.round(r.left)}..${Math.round(r.right)}`).join(' '),
+        )
+        await page.getByRole('option', { name: /Add a measure/ }).click()
+        await page.waitForSelector('[data-amount-new]')
+        await page.waitForTimeout(250)
+        await noSideScroll(page, 'new measure')
+        await within(page, 'new measure', '[data-slot="dialog-content"]', 'dialog')
+        for (const [label, id] of [
+          ['name', '#amount-new-label'],
+          ['weight', '#amount-new-grams'],
+        ]) {
+          const box = await page.locator(id).boundingBox()
+          check(
+            box.width >= 60 && box.height >= (phone ? 40 : 32),
+            `new measure: the ${label} box is tappable`,
+            `${Math.round(box.width)}x${Math.round(box.height)}`,
+          )
+          check(
+            (await page.locator(id).inputValue()) === '',
+            `new measure: the ${label} box starts empty`,
+          )
+        }
+        // And it saves, and is picked: adding a measure is something you do
+        // in order to use it, not in order to have added it.
+        //
+        // Its own name per pass. One fixture is built for all six passes, and
+        // a portion added in the first is still on the food in the second —
+        // where adding it again is a duplicate the food form rightly refuses.
+        const measure = `pack ${tag}`
+        await page.locator('#amount-new-label').fill(measure)
+        await page.locator('#amount-new-grams').fill('220')
+        await page.getByRole('button', { name: 'Save and use it' }).click()
+        await page.waitForSelector('[aria-label="Unit"]')
+        await page.waitForTimeout(400)
+        check(
+          (await page.locator('[aria-label="Unit"]').innerText()).includes(measure),
+          'new measure: the new measure is the one selected',
+          await page.locator('[aria-label="Unit"]').innerText(),
+        )
+        check(
+          (await page.locator('[data-amount-weight]').innerText()).includes('220 g'),
+          'new measure: and one of them weighs what was typed',
+          await page.locator('[data-amount-weight]').innerText(),
+        )
+      },
+      false,
+    )
 
     // The rest of the app, which shares the button and dialog primitives the
     // recipe screens were fixed with: nothing more than a check that widening

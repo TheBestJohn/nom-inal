@@ -1,4 +1,5 @@
 import type { Nutrients, RecipeSummary } from '@/api/types'
+import { GRAMS, amountGrams, type Amount } from '@/lib/amounts'
 
 /** The four figures the live totals in the editor need. */
 export type Macros = Pick<Nutrients, 'calories_kcal' | 'protein_g' | 'carbs_g' | 'fat_g'>
@@ -18,8 +19,15 @@ export interface DraftItem {
   refId: string
   name: string
   brand: string | null
-  /** Grams for a food, servings for a recipe. */
+  /** Grams for a food, servings for a recipe. Always the figure the totals use. */
   amount: number
+  /**
+   * How a food row's amount is being said — two chicken breasts, 348 grams —
+   * with `amount` kept as the weight it comes to. Recipe and free-text rows
+   * carry a grams measure they never show: servings are not a household
+   * measure and free text has no amount at all.
+   */
+  said: Amount
   /** Nutrients in one gram of the food, or one serving of the recipe. */
   perUnit: Macros
   /** Grams in one unit: 1 for a food, and a serving's weight for a recipe. */
@@ -52,14 +60,15 @@ export interface FoodLike {
 let counter = 0
 const fresh = (prefix: string) => `${prefix}-${Date.now()}-${counter++}`
 
-export function foodItem(food: FoodLike, grams: number): DraftItem {
+export function foodItem(food: FoodLike, said: Amount): DraftItem {
   return {
     key: fresh(food.id),
     kind: 'food',
     refId: food.id,
     name: food.name,
     brand: food.brand,
-    amount: grams,
+    amount: amountGrams(said) ?? 0,
+    said,
     // Foods are stored per 100 g; the draft works in per-gram so both kinds
     // of row share one multiplication.
     perUnit: {
@@ -82,6 +91,7 @@ export function textItem(label: string): DraftItem {
     // Nothing to scale and nothing to contribute. Carried as zeroes rather
     // than as a special case so the totals stay one multiplication.
     amount: 0,
+    said: { measure: GRAMS, count: '' },
     perUnit: { calories_kcal: 0, protein_g: 0, carbs_g: 0, fat_g: 0 },
     gramsPerUnit: 0,
   }
@@ -95,6 +105,7 @@ export function recipeItem(recipe: RecipeSummary): DraftItem {
     name: recipe.name,
     brand: null,
     amount: 1,
+    said: { measure: GRAMS, count: '1' },
     perUnit: recipe.per_serving,
     gramsPerUnit: recipe.total_weight_g / recipe.servings,
   }
