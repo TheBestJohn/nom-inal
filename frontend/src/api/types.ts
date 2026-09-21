@@ -173,14 +173,50 @@ export interface Food {
    * beside grams when logging. What gets logged is still grams.
    */
   portions: FoodPortion[]
+  /**
+   * The food's own serving, in a portion's shape, so a picker can offer it
+   * beside the rest: every food has one, including the many with no
+   * `portions` at all. Its `id` is the food's id and its `source` is
+   * `serving`; it is not a row in `food_portions`, so it cannot be edited or
+   * deleted like one — but it can be sent as `portion_id` anywhere a real
+   * portion can.
+   */
+  serving_portion: FoodPortion
 }
 
 export interface FoodPortion {
   id: string
   label: string
   grams: number
-  /** `usda` | `off` for a provider's measure, `user` for one typed in. */
-  source: 'usda' | 'off' | 'user' | string
+  /**
+   * `usda` | `off` for a provider's measure, `user` for one typed in,
+   * `serving` for the food's own serving (see `Food.serving_portion`).
+   */
+  source: 'usda' | 'off' | 'user' | 'serving' | string
+}
+
+/**
+ * An amount as a phrase, ready to print: "2 chicken breasts" when it was
+ * entered as a household measure, "348 g" when it was entered as a weight.
+ *
+ * Rendered by the server — one set of pluralisation rules for the diary, the
+ * recipe page, the shared page and the Markdown export — so show it as it
+ * arrives rather than rebuilding it from `portion_label` and `portion_count`.
+ */
+export type AmountLabel = string
+
+/**
+ * How to send an amount as a household measure instead of a weight.
+ *
+ * `portion_id` is a `FoodPortion.id` — one of the food's `portions`, or its
+ * `serving_portion`. The server multiplies it out, stores the grams and
+ * snapshots the label. Send this **or** `quantity_g`, never both: both is a
+ * 400 naming the conflict.
+ */
+export interface PortionAmount {
+  portion_id: string
+  /** Defaults to 1. */
+  portion_count?: number
 }
 
 /** How the home page plots the nutrients you follow. */
@@ -389,6 +425,15 @@ export interface RecipeItem {
   variant_label: string | null
   quantity_g: number | null
   servings: number | null
+  /**
+   * The household measure this ingredient was written in and how many of
+   * them — "1 breast", 2 — or null when it was written in grams. A snapshot:
+   * correcting the portion later never changes this ingredient's weight.
+   */
+  portion_label: string | null
+  portion_count: number | null
+  /** The amount to print: "2 breasts", "200 g", "1 serving", "" for a label. */
+  amount_label: AmountLabel
   /** Grams for a food; for a sub-recipe, the weight of the servings taken. */
   weight_g: number
   note: string | null
@@ -518,6 +563,17 @@ export interface DiaryEntry {
   brand: string | null
   quantity_g: number | null
   recipe_servings: number | null
+  /**
+   * What the person said they ate — "1 chicken breast", 2 — when the amount
+   * was entered as a household measure. Null when it was typed in grams, and
+   * on a recipe entry, which is logged in servings. A snapshot of the portion
+   * as it read then: `quantity_g` stays the weight that was logged even if
+   * the portion is corrected afterwards.
+   */
+  portion_label: string | null
+  portion_count: number | null
+  /** The amount to print: "2 chicken breasts", or "348 g". */
+  amount_label: AmountLabel
   nutrients: Nutrients
   created_at: string
   updated_at: string

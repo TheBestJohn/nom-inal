@@ -5,6 +5,7 @@ use utoipa::ToSchema;
 use uuid::Uuid;
 use validator::Validate;
 
+use super::measure;
 use super::nutrients::{EnergyShare, Nutrients};
 use super::target::TargetProgress;
 
@@ -17,6 +18,9 @@ pub struct DiaryRow {
     pub recipe_id: Option<Uuid>,
     pub quantity_g: Option<f64>,
     pub recipe_servings: Option<f64>,
+    /// The household measure this amount was entered as, as it read then.
+    pub portion_label: Option<String>,
+    pub portion_count: Option<f64>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 
@@ -73,6 +77,17 @@ pub struct DiaryEntry {
     pub brand: Option<String>,
     pub quantity_g: Option<f64>,
     pub recipe_servings: Option<f64>,
+    /// The household measure this was logged as — "1 chicken breast" — and
+    /// how many of them. Null when the amount was typed in grams. A snapshot
+    /// of what the portion said at the time, so correcting the portion later
+    /// never rewrites a meal that has already been eaten.
+    pub portion_label: Option<String>,
+    pub portion_count: Option<f64>,
+    /// The amount as a phrase, ready to show: "2 chicken breasts" when a
+    /// portion was used, "348 g" when it was not. Rendered here so the diary,
+    /// the recipe page, the share page and the export cannot each invent
+    /// their own plural.
+    pub amount_label: String,
     pub nutrients: Nutrients,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -95,6 +110,14 @@ impl From<DiaryRow> for DiaryEntry {
             brand: row.food_brand.clone(),
             quantity_g: row.quantity_g,
             recipe_servings: row.recipe_servings,
+            amount_label: measure::amount_label(
+                row.portion_label.as_deref(),
+                row.portion_count,
+                row.quantity_g,
+                row.recipe_servings,
+            ),
+            portion_label: row.portion_label,
+            portion_count: row.portion_count,
             nutrients,
             created_at: row.created_at,
             updated_at: row.updated_at,
@@ -118,6 +141,15 @@ pub struct CreateDiaryEntryRequest {
     pub quantity_g: Option<f64>,
     #[validate(range(min = 0.01, max = 1000.0, message = "must be between 0.01 and 1000"))]
     pub recipe_servings: Option<f64>,
+    /// Log a household measure instead of a weight: a portion of this food
+    /// (`food.portions[]`, or the food's own serving, whose id is the food's
+    /// id). The server multiplies it out, so `quantity_g` is still what gets
+    /// stored — sending both is a 400, because only one of them can be the
+    /// amount.
+    pub portion_id: Option<Uuid>,
+    /// How many of them. Defaults to 1.
+    #[validate(range(min = 0.01, max = 1000.0, message = "must be between 0.01 and 1000"))]
+    pub portion_count: Option<f64>,
 }
 
 #[derive(Debug, Default, Deserialize, Validate, ToSchema)]
@@ -133,6 +165,13 @@ pub struct PatchDiaryEntryRequest {
     pub quantity_g: Option<f64>,
     #[validate(range(min = 0.01, max = 1000.0, message = "must be between 0.01 and 1000"))]
     pub recipe_servings: Option<f64>,
+    /// Re-enter the amount as a household measure. As on create: the grams
+    /// are computed and stored, and sending `quantity_g` too is a 400.
+    /// Sending `quantity_g` on its own clears the measure, because a weight
+    /// typed by hand is no longer "two breasts".
+    pub portion_id: Option<Uuid>,
+    #[validate(range(min = 0.01, max = 1000.0, message = "must be between 0.01 and 1000"))]
+    pub portion_count: Option<f64>,
 }
 
 #[derive(Debug, Deserialize, ToSchema)]

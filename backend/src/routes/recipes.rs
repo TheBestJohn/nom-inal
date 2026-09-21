@@ -17,6 +17,7 @@ use crate::auth::CurrentUser;
 use crate::domain::food::food_key;
 use crate::domain::ingredient::parse_ingredient;
 use crate::domain::jsonld;
+use crate::domain::measure;
 use crate::domain::nutrients::Nutrients;
 use crate::domain::photo::photo_url;
 use crate::domain::recipe::{
@@ -420,6 +421,11 @@ pub async fn from_meal(
                 label: None,
                 quantity_g: e.quantity_g,
                 servings: e.recipe_servings,
+                // The grams are what the meal was; a portion is a way of
+                // having arrived at them, and this path arrives at them from
+                // the entry itself.
+                portion_id: None,
+                portion_count: None,
                 note: None,
             })
             .collect(),
@@ -521,7 +527,21 @@ async fn insert_items(
     body: &UpsertRecipeRequest,
 ) -> ApiResult<()> {
     for item in &body.items {
-        item.check_target().map_err(ApiError::bad_request)?;
+        item.check_portion().map_err(ApiError::bad_request)?;
+    }
+
+    // An ingredient written as "2 breasts" has no grams until the portion has
+    // been looked up, so that happens first and the rest of the list — the
+    // XOR, the food and sub-recipe checks, the insert — sees an ordinary
+    // ingredient in grams with two extra words attached.
+    let amounts = resolve_portions(tx, &body.items).await?;
+
+    for (item, amount) in body.items.iter().zip(&amounts) {
+        // The XOR is checked against the grams the amount came to rather than
+        // the grams the request carried, so an ingredient written as "2
+        // breasts" answers to exactly the same rule as one written as 348 g.
+        item.check_target(amount.quantity_g)
+            .map_err(ApiError::bad_request)?;
     }
 
     let food_ids: Vec<Option<Uuid>> = body.items.iter().map(|i| i.food_id).collect();
@@ -537,8 +557,11 @@ async fn insert_items(
                 .map(String::from)
         })
         .collect();
-    let quantities: Vec<Option<f64>> = body.items.iter().map(|i| i.quantity_g).collect();
+    let quantities: Vec<Option<f64>> = amounts.iter().map(|a| a.quantity_g).collect();
     let servings: Vec<Option<f64>> = body.items.iter().map(|i| i.servings).collect();
+    let portion_labels: Vec<Option<String>> =
+        amounts.iter().map(|a| a.portion_label.clone()).collect();
+    let portion_counts: Vec<Option<f64>> = amounts.iter().map(|a| a.portion_count).collect();
     let notes: Vec<Option<String>> = body.items.iter().map(|i| i.note.clone()).collect();
     let orders: Vec<i32> = (0..body.items.len() as i32).collect();
 
@@ -577,9 +600,10 @@ async fn insert_items(
     // arrays into rows, so a 20-ingredient recipe is a single round trip.
     sqlx::query(
         "INSERT INTO recipe_items
-             (recipe_id, food_id, sub_recipe_id, label, quantity_g, servings, note, sort_order)
+             (recipe_id, food_id, sub_recipe_id, label, quantity_g, servings, note, sort_order,
+              portion_label, portion_count)
          SELECT $1, * FROM UNNEST($2::uuid[], $3::uuid[], $4::text[], $5::float8[], $6::float8[],
-                                  $7::text[], $8::int[])",
+                                  $7::text[], $8::int[], $9::text[], $10::float8[])",
     )
     .bind(recipe_id)
     .bind(&food_ids)
@@ -589,11 +613,73 @@ async fn insert_items(
     .bind(&servings)
     .bind(&notes)
     .bind(&orders)
+    .bind(&portion_labels)
+    .bind(&portion_counts)
     .execute(&mut **tx)
     .await
     .map_err(graph_error)?;
 
     Ok(())
+}
+
+/// What one ingredient's amount came to, after any portion was resolved.
+struct ResolvedAmount {
+    quantity_g: Option<f64>,
+    portion_label: Option<String>,
+    portion_count: Option<f64>,
+}
+
+/// Turn every "a portion, this many times" into grams plus the words it was
+/// written in, in one round trip for the whole list.
+///
+/// The label is copied, not referenced: a recipe that says "2 breasts · 348 g"
+/// keeps saying 348 g when somebody later decides a breast is 200 g, for the
+/// same reason a logged meal does. See migration 0020.
+async fn resolve_portions(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    items: &[RecipeItemInput],
+) -> ApiResult<Vec<ResolvedAmount>> {
+    let wanted: Vec<Uuid> = items.iter().filter_map(|i| i.portion_id).collect();
+    let found = if wanted.is_empty() {
+        Vec::new()
+    } else {
+        super::foods::portion_snapshots(&mut **tx, &wanted).await?
+    };
+
+    items
+        .iter()
+        .map(|item| {
+            let Some(portion_id) = item.portion_id else {
+                return Ok(ResolvedAmount {
+                    quantity_g: item.quantity_g,
+                    portion_label: None,
+                    portion_count: None,
+                });
+            };
+            // Matched on the food as well as the id: a portion of a different
+            // food is not a measure of this ingredient, however real it is.
+            let measure = found
+                .iter()
+                .find(|(id, food_id, _, _)| *id == portion_id && Some(*food_id) == item.food_id)
+                .ok_or_else(|| {
+                    ApiError::bad_request(format!("unknown portion id {portion_id} for that food"))
+                })?;
+            let count = item.portion_count.unwrap_or(1.0);
+            let grams = (measure.3 * count * 1000.0).round() / 1000.0;
+            if !(0.1..=100_000.0).contains(&grams) {
+                return Err(ApiError::bad_request(format!(
+                    "{} × {} comes to more than 100000 g: check the count",
+                    crate::domain::recipe::trim_float(count),
+                    measure.2
+                )));
+            }
+            Ok(ResolvedAmount {
+                quantity_g: Some(grams),
+                portion_label: Some(measure.2.clone()),
+                portion_count: Some(count),
+            })
+        })
+        .collect()
 }
 
 /// Surface the cycle and depth guards with the wording the trigger raised.
@@ -661,7 +747,7 @@ pub async fn load_recipe(state: &AppState, viewer: Option<Uuid>, id: Uuid) -> Ap
     let item_rows: Vec<RecipeItemRow> = sqlx::query_as(
         r#"
         SELECT ri.id, ri.food_id, ri.sub_recipe_id, ri.label, ri.quantity_g, ri.servings,
-               ri.note, ri.sort_order,
+               ri.portion_label, ri.portion_count, ri.note, ri.sort_order,
                COALESCE(f.name, sub.name, ri.label) AS name,
                f.brand AS brand,
                f.variant_label AS variant_label,
@@ -717,6 +803,14 @@ pub async fn load_recipe(state: &AppState, viewer: Option<Uuid>, id: Uuid) -> Ap
             variant_label: r.variant_label,
             quantity_g: r.quantity_g,
             servings: r.servings,
+            amount_label: measure::amount_label(
+                r.portion_label.as_deref(),
+                r.portion_count,
+                r.quantity_g,
+                r.servings,
+            ),
+            portion_label: r.portion_label,
+            portion_count: r.portion_count,
             weight_g: round2(r.weight_g),
             note: r.note,
             sort_order: r.sort_order,
@@ -854,6 +948,8 @@ pub fn export_recipe<'a>(
                         variant_label: item.variant_label.clone(),
                     }),
                     quantity_g: item.quantity_g,
+                    portion_label: item.portion_label.clone(),
+                    portion_count: item.portion_count,
                     note: item.note.clone(),
                     ..Default::default()
                 }

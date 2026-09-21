@@ -16,6 +16,7 @@ use crate::domain::food::{
     RecentRecipe, RevertRequest, UpsertFoodRequest, Verdict, VerificationStatus, VerifyRequest,
 };
 use crate::domain::nutrients::Nutrients;
+use crate::domain::portion_seed;
 use crate::error::{ApiError, ApiResult};
 use crate::extract::Json;
 use crate::state::AppState;
@@ -44,6 +45,98 @@ use crate::domain::food::{FOOD_COLUMNS as COLUMNS, FOOD_KEY_SQL};
 
 /// The same list for the two statements that alias `foods` as `f`.
 const F_COLUMNS: &str = food_columns!("f");
+
+/// Every measure a food can be logged in: its portion rows, plus its own
+/// serving, which is a household measure too and the one every food has.
+///
+/// The serving borrows the food's id, so a single `portion_id` names either
+/// kind and nothing downstream has to ask which it was holding. Two foods
+/// cannot collide over it, and a portion row cannot take it, because both
+/// ids come from the same `gen_random_uuid()` space.
+const MEASURES_OF_FOOD: &str = "
+    SELECT p.id, p.food_id, p.label, p.grams FROM food_portions p
+    UNION ALL
+    SELECT f.id, f.id,
+           coalesce(nullif(btrim(f.serving_label), ''), '1 serving'),
+           f.serving_size_g
+    FROM foods f";
+
+/// What a portion of a food says it weighs, and what it is called, at this
+/// moment — which is what gets copied onto the row that uses it.
+///
+/// 404 rather than 400 when the portion belongs to another food: from the
+/// caller's side "portion X of food Y" simply does not exist, and saying so
+/// does not disclose whose it is.
+pub async fn portion_snapshot<'e, E>(
+    db: E,
+    food_id: Uuid,
+    portion_id: Uuid,
+) -> ApiResult<(String, f64)>
+where
+    E: sqlx::Executor<'e, Database = sqlx::Postgres>,
+{
+    sqlx::query_as::<_, (String, f64)>(&format!(
+        "SELECT label, grams FROM ({MEASURES_OF_FOOD}) m WHERE m.id = $1 AND m.food_id = $2"
+    ))
+    .bind(portion_id)
+    .bind(food_id)
+    .fetch_optional(db)
+    .await?
+    .ok_or(ApiError::NotFound("portion"))
+}
+
+/// The same lookup for a whole ingredient list: `(portion id, food id,
+/// label, grams)` for every id asked about that exists.
+pub async fn portion_snapshots<'e, E>(
+    db: E,
+    portion_ids: &[Uuid],
+) -> ApiResult<Vec<(Uuid, Uuid, String, f64)>>
+where
+    E: sqlx::Executor<'e, Database = sqlx::Postgres>,
+{
+    Ok(sqlx::query_as::<_, (Uuid, Uuid, String, f64)>(&format!(
+        "SELECT id, food_id, label, grams FROM ({MEASURES_OF_FOOD}) m WHERE m.id = ANY($1)"
+    ))
+    .bind(portion_ids)
+    .fetch_all(db)
+    .await?)
+}
+
+/// Give a newly created food the household measures everybody already knows
+/// for it — "1 breast", "1 slice" — when its name says what it is.
+///
+/// Only ever additive, and only on a food with no measures at all: the
+/// `NOT EXISTS` is evaluated against the statement's snapshot, so either the
+/// whole bundle lands on a food that had none or nothing does. A person's
+/// portion is never touched, and neither is a provider's.
+async fn seed_portions(
+    tx: &mut Transaction<'_, Postgres>,
+    food_id: Uuid,
+    name: &str,
+) -> ApiResult<()> {
+    let seeds = portion_seed::seeds_for(name);
+    if seeds.is_empty() {
+        return Ok(());
+    }
+
+    let labels: Vec<&str> = seeds.iter().map(|p| p.label).collect();
+    let grams: Vec<f64> = seeds.iter().map(|p| p.grams).collect();
+    let orders: Vec<i32> = (0..seeds.len() as i32).collect();
+    sqlx::query(
+        "INSERT INTO food_portions (food_id, label, grams, source, sort_order)
+         SELECT $1, label, grams, 'usda', sort_order
+         FROM UNNEST($2::text[], $3::float8[], $4::int[]) AS u(label, grams, sort_order)
+         WHERE NOT EXISTS (SELECT 1 FROM food_portions p WHERE p.food_id = $1)
+         ON CONFLICT (food_id, label) DO NOTHING",
+    )
+    .bind(food_id)
+    .bind(&labels)
+    .bind(&grams)
+    .bind(&orders)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
 
 /// Open a transaction that the history triggers can attribute.
 ///
@@ -178,7 +271,15 @@ pub async fn create(
     .await
     .map_err(variant_error)?;
 
+    // A new food arrives with the measures its name implies, so "two chicken
+    // breasts" works on the day the instance is installed rather than after
+    // somebody has typed a portion in. See `domain::portion_seed`.
+    seed_portions(&mut tx, row.id, &row.name).await?;
+
     tx.commit().await?;
+
+    // Read back, because the row above was returned before the seeds landed.
+    let row = load_food(&state, row.id).await?;
 
     Ok((
         StatusCode::CREATED,
@@ -550,6 +651,10 @@ pub async fn import(
         .execute(&mut *tx)
         .await?;
     }
+
+    // A provider that published none leaves the food with nothing to pick,
+    // and an imported "Bananas, raw" is as much a banana as a typed one.
+    seed_portions(&mut tx, food_id, body.name.trim()).await?;
 
     tx.commit().await?;
 

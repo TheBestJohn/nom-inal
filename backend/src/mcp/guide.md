@@ -26,29 +26,66 @@ An entry is exactly one of:
 - `food_id` + `quantity_g` — grams of a food, or
 - `recipe_id` + `recipe_servings` — servings of a recipe.
 
-Never both. "2 eggs" means 2 × the egg food's `serving_size_g` grams; "150 g
-chicken" means `quantity_g: 150`. `log_food` does this arithmetic and reports
-it in its `basis` field before writing anything.
+Never both. "150 g chicken" means `quantity_g: 150`. `log_food` does this
+arithmetic and reports it in its `basis` field before writing anything.
 
 `meal` is `breakfast`, `lunch`, `dinner` or `snack` (lower-case; anything else
 is kept as a custom meal name). `logged_on` is a date, `YYYY-MM-DD`, and
 defaults to **today in UTC** — pass it explicitly when the person's local day
 differs.
 
-A food may carry `portions` — household measures such as "1 cup" with a
-`grams` figure. "A cup of oats" is that portion's grams of the oats food;
-the entry is still written in `quantity_g`. `foods_recent` lists what the
-person logged most recently, with the amount they used last time, and is the
-place to resolve "the usual" or "what I had yesterday". `diary_copy` copies a
-day, or one meal of it, onto another date; `recipes_from_meal` turns a logged
-meal into a recipe without re-entering it.
+## Amounts people actually use
+
+Nobody weighs two chicken breasts. A food carries `portions` — household
+measures such as "1 cup" or "1 breast", each with its `grams` — and its own
+`serving_portion`, which is `serving_size_g`/`serving_label` in the same
+shape, with the **food's id as its `id`**, for the many foods that have no
+portion rows.
+
+To log one, send `portion_id` and `portion_count` **instead of**
+`quantity_g`:
+
+```json
+{ "food_id": "…", "portion_id": "…", "portion_count": 2, "meal": "dinner" }
+```
+
+The server multiplies the portion out, stores the grams as it always did —
+`quantity_g` on the entry is still the weight, and still what every total is
+computed from — and copies the measure's label onto the row. Sending both
+`quantity_g` and `portion_id` is a 400: only one of them can be the amount.
+A portion that belongs to a different food is a 404.
+
+Every entry and every recipe ingredient therefore comes back with
+**`amount_label`**: `"2 chicken breasts"` when it was logged that way, `"348
+g"` when it was not. Use it verbatim when reporting an amount — it is the
+same phrase the app, the shared recipe page and the Markdown export print,
+and its pluralisation is the server's job, not yours.
+
+The label is a **snapshot**, not a link. Correcting a portion's weight later
+changes what the *next* meal works out to and never what an old one says: the
+person ate 348 g, whatever anyone decides a breast weighs afterwards.
+Re-sending `quantity_g` on `PATCH /diary/{id}` clears the phrase, because a
+weight typed by hand is no longer "two of" anything.
+
+`log_food` does all of this from the words: "2 chicken breasts" finds the
+`1 breast` portion, "2 slices of bread" finds `1 slice`, and a count that
+matches no measure falls back to the food's serving size, saying so in
+`basis`. Its payload's `amount` field is the phrase that will be recorded.
+
+`foods_recent` lists what the person logged most recently, with the amount
+they used last time, and is the place to resolve "the usual" or "what I had
+yesterday". `diary_copy` copies a day, or one meal of it, onto another date,
+phrases included; `recipes_from_meal` turns a logged meal into a recipe
+without re-entering it.
 
 ## Recipes are graphs, and their macros are never stored
 
 A recipe's totals are computed on read from its ingredients, so correcting a
 food later corrects every recipe that uses it. An ingredient is exactly one of:
 
-- `food_id` + `quantity_g` — a food, in grams;
+- `food_id` + `quantity_g` — a food, in grams, or `food_id` + `portion_id` +
+  `portion_count` for "2 chicken breasts", exactly as in the diary: the grams
+  are computed and stored, and the ingredient reports its `amount_label`;
 - `sub_recipe_id` + `servings` — another recipe, by reference, in servings.
   Linked, not copied: change the base sauce and every dish built on it
   follows. No cycles, at most five levels deep;

@@ -15,12 +15,13 @@ use super::nutrients::Nutrients;
 /// than a build error. Defining it beside the struct means the next column
 /// only has to be added once.
 ///
-/// It is a macro rather than a string because the last column is not a
-/// column: `portions` is the food's household measures, aggregated from
+/// It is a macro rather than a string because the last two columns are not
+/// columns: `portions` is the food's household measures, aggregated from
 /// `food_portions` in a correlated subquery so a food arrives whole from a
-/// list, a detail read or a `RETURNING` clause alike. That subquery has to
-/// name the row it belongs to, and the two statements that alias `foods` as
-/// `f` cannot say `foods.id`, so the table name is a parameter.
+/// list, a detail read or a `RETURNING` clause alike, and `serving_portion`
+/// is the food's own serving expressed in the same shape. Both have to name
+/// the row they belong to, and the two statements that alias `foods` as `f`
+/// cannot say `foods.id`, so the table name is a parameter.
 #[rustfmt::skip]
 macro_rules! food_columns {
     ($t:literal) => {
@@ -35,7 +36,12 @@ macro_rules! food_columns {
             "(SELECT coalesce(json_agg(json_build_object(",
             "'id', p.id, 'label', p.label, 'grams', p.grams, 'source', p.source) ",
             "ORDER BY p.sort_order, lower(p.label)), '[]'::json) ",
-            "FROM food_portions p WHERE p.food_id = ", $t, ".id) AS portions"
+            "FROM food_portions p WHERE p.food_id = ", $t, ".id) AS portions, ",
+            // The food's own serving, in a portion's clothing. See
+            // `Food::serving_portion`.
+            "json_build_object('id', ", $t, ".id, 'label', ",
+            "coalesce(nullif(btrim(", $t, ".serving_label), ''), '1 serving'), ",
+            "'grams', ", $t, ".serving_size_g, 'source', 'serving') AS serving_portion"
         )
     };
 }
@@ -113,6 +119,22 @@ pub struct Food {
     /// still grams; a portion is a way of arriving at the number.
     #[sqlx(json)]
     pub portions: Vec<FoodPortion>,
+    /// The food's own serving, offered in the same shape as a portion.
+    ///
+    /// `serving_size_g` and `serving_label` are a household measure already —
+    /// "1 large, 50 g" is exactly what a portion says — so a picker should be
+    /// able to offer it beside the rest without anyone first copying it into
+    /// `food_portions`, where it would immediately be a second copy able to
+    /// disagree with the food. It is a field of its own rather than an extra
+    /// element of `portions`, because `portions` means "rows of
+    /// `food_portions`" to everything that already reads it, including the
+    /// dialog that offers to delete one.
+    ///
+    /// Its `id` is the food's own id, which is what makes it usable: it can
+    /// be sent as `portion_id` anywhere a real portion can, and no other
+    /// portion can ever collide with it. `source` is `serving`.
+    #[sqlx(json)]
+    pub serving_portion: FoodPortion,
 }
 
 /// One household measure of a food.
@@ -124,7 +146,9 @@ pub struct FoodPortion {
     pub grams: f64,
     /// `usda` or `off` for a measure the provider published, `user` for one
     /// somebody typed in. A re-import refreshes the former and never the
-    /// latter.
+    /// latter. `serving` marks the food's own serving size, which is not a
+    /// row in `food_portions` and cannot be edited or deleted as one — see
+    /// [`Food::serving_portion`].
     pub source: String,
 }
 

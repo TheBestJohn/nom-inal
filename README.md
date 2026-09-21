@@ -336,7 +336,40 @@ a food now arrives with a JSON aggregate of its portions that has to name the
 row it belongs to, and the two statements that alias `foods` as `f` cannot
 say `foods.id`. One definition parameterised by the table name is what keeps it
 from becoming two lists again — which is how the provenance columns once broke
-two modules at runtime.
+two modules at runtime. The food's own serving rides along the same way, as
+`serving_portion`: `serving_size_g` plus `serving_label` *is* a household
+measure, and giving it a portion's shape means every food has something to
+offer a picker without a row being invented for it in `food_portions`, where
+it would immediately be a second copy free to disagree with the food.
+
+**A count is remembered as words; the grams stay authoritative.** A portion
+answers "how many grams is one of these", and the thing people actually say is
+"two of them". So a diary entry and a recipe ingredient carry a snapshot of the
+measure they were entered in — the label as it read, and the count — beside the
+grams they came to. Deliberately a snapshot and not a `portion_id`: a portion
+is editable, and if a meal pointed at the row, correcting "1 breast" from 174 g
+to 200 g would silently rewrite last Tuesday's lunch. The person ate 348 g. The
+label is what they said at the time, the grams are what was counted, and
+neither revises the other afterwards — which is also why deleting a portion
+cannot take a meal's amount with it.
+
+The phrase itself is rendered on the server, as `amount_label`, and there is
+exactly one function that renders it. The same amount appears in the diary, on
+the recipe page, on the public share page, in that page's JSON-LD and in the
+Markdown export; four copies of "how do I pluralise a portion label" would be
+four subtly different answers, and the one anybody notices first is the shared
+page in someone else's kitchen. The rule is timid on purpose: an ordinary noun
+phrase gets an ordinary plural ("2 chicken breasts", "3 slices", "2 patties",
+never "4 ozs"), and a label that is a description rather than a name — USDA
+publishes "cup, chopped" and `medium (2-1/2" dia)` — is multiplied instead,
+"3 × cup, chopped". Obviously mechanical beats confidently wrong.
+
+A short bundled table of USDA standard portions is applied when a food is
+created whose name *is* one of about sixty everyday things, and which has no
+measures yet, so counting works on a fresh instance rather than after an
+evening of data entry. It matches the whole name and never part of one —
+"chicken breast burrito" is a burrito — because a wrong measure is a wrong
+weight somebody will log without checking.
 
 **Units are a display preference; storage is metric, and food is always grams.**
 The profile carries `units`, `metric` or `imperial`, and nothing else changes:
