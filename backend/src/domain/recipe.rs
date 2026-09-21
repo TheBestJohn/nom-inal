@@ -469,17 +469,21 @@ fn write_items(out: &mut String, items: &[RecipeExportItem], indent: usize) {
                 .as_deref()
                 .map(|b| format!(" ({b})"))
                 .unwrap_or_default();
-            out.push_str(&format!(
-                "{pad}- {} {}{brand}{}\n",
-                measure::amount_label(
+            // Same pairing rule as the shared page: a measure the name
+            // already carries moves into the name rather than being said
+            // twice ("2 Chicken breasts", not "2 breasts Chicken breast").
+            let (amount, thing) = measure::ingredient_columns(
+                &measure::amount_label(
                     item.portion_label.as_deref(),
                     item.portion_count,
                     item.quantity_g,
-                    None
+                    None,
                 ),
-                food.name,
-                note(item)
-            ));
+                item.portion_label.as_deref(),
+                item.portion_count,
+                &food.name,
+            );
+            out.push_str(&format!("{pad}- {amount} {thing}{brand}{}\n", note(item)));
         } else if let Some(sub) = &item.recipe {
             let servings = item.servings.unwrap_or(1.0);
             out.push_str(&format!(
@@ -663,7 +667,7 @@ mod export_tests {
             md,
             "# Pasta\n\nQuick.\n\nMakes 2 servings.\n\n## Ingredients\n\n\
              - 200 g Spaghetti (Barilla)\n- 1 serving of Sauce\n  - 400 g Tomato\n\
-             - 2 breasts Chicken breast\n- salt to taste\n\n\
+             - 2 Chicken breasts\n- salt to taste\n\n\
              ## Method\n\n1. Boil\n2. Toss\n\n## Nutrition per serving\n\n\
              | Calories | Protein | Carbs | Net carbs | Fat | Fiber | Sugar | Sat. fat | Sodium |\n\
              |---|---|---|---|---|---|---|---|---|\n\

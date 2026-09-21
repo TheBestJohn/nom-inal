@@ -328,3 +328,82 @@ mod tests {
         );
     }
 }
+
+/// The two columns of an ingredient line: the amount, and the thing.
+///
+/// A recipe card reads "2 | Chicken breasts", not "2 breasts | Chicken
+/// breast". When the portion's measure is already part of the food's name —
+/// a breast of "Chicken breast", a clove of "Garlic clove" — repeating it
+/// says the same word twice and reads like a stutter, so the measure drops
+/// out of the amount and the name takes the count instead. A measure the
+/// name does not contain ("1 cup" of "Rolled oats") is doing real work and
+/// stays exactly where it is.
+///
+/// Both columns come from here so the page, the Markdown card and the
+/// JSON-LD an importer reads cannot phrase the same ingredient three ways.
+pub fn ingredient_columns(
+    amount_label: &str,
+    portion_label: Option<&str>,
+    portion_count: Option<f64>,
+    name: &str,
+) -> (String, String) {
+    let (Some(label), Some(count)) = (portion_label, portion_count) else {
+        return (amount_label.to_string(), name.to_string());
+    };
+    let measure = measure_of(label);
+    let singular = singularise(measure).unwrap_or_else(|| measure.to_ascii_lowercase());
+    // Whole words only: "1 cup" must not be swallowed by a food called
+    // "Cupcakes", and a measure of "rib" is not part of "Ribbon pasta".
+    let named = name
+        .to_ascii_lowercase()
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .any(|word| word == singular || word == measure.to_ascii_lowercase());
+    if !named {
+        return (amount_label.to_string(), name.to_string());
+    }
+    let thing = if count == 1.0 || !is_noun_phrase(name) {
+        name.to_string()
+    } else {
+        pluralise(name)
+    };
+    (number(count), thing)
+}
+
+#[cfg(test)]
+mod ingredient_column_tests {
+    use super::ingredient_columns;
+
+    #[test]
+    fn a_measure_already_in_the_name_leaves_the_amount() {
+        // "2 breasts Chicken breast" is the stutter this exists to stop.
+        let (amount, name) =
+            ingredient_columns("2 breasts", Some("1 breast"), Some(2.0), "Chicken breast");
+        assert_eq!((amount.as_str(), name.as_str()), ("2", "Chicken breasts"));
+    }
+
+    #[test]
+    fn one_of_something_is_not_pluralised() {
+        let (amount, name) =
+            ingredient_columns("1 breast", Some("1 breast"), Some(1.0), "Chicken breast");
+        assert_eq!((amount.as_str(), name.as_str()), ("1", "Chicken breast"));
+    }
+
+    #[test]
+    fn a_measure_the_name_does_not_carry_is_doing_work() {
+        let (amount, name) = ingredient_columns("1 cup", Some("1 cup"), Some(1.0), "Rolled oats");
+        assert_eq!((amount.as_str(), name.as_str()), ("1 cup", "Rolled oats"));
+    }
+
+    #[test]
+    fn a_word_inside_another_word_does_not_count() {
+        // "Cupcakes" contains "cup" as letters, not as a word.
+        let (amount, name) = ingredient_columns("2 cups", Some("1 cup"), Some(2.0), "Cupcakes");
+        assert_eq!((amount.as_str(), name.as_str()), ("2 cups", "Cupcakes"));
+    }
+
+    #[test]
+    fn a_weight_is_left_alone() {
+        let (amount, name) = ingredient_columns("200 g", None, None, "Plain flour");
+        assert_eq!((amount.as_str(), name.as_str()), ("200 g", "Plain flour"));
+    }
+}

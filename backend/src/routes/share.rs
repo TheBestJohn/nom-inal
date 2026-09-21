@@ -485,7 +485,14 @@ fn ingredient_rows(recipe: &Recipe) -> Vec<Row> {
         .items
         .iter()
         .map(|item| {
-            let mut name = item.name.clone();
+            // The measure and the name are decided together: a portion the
+            // name already carries belongs to the name, not to the amount.
+            let (amount, mut name) = crate::domain::measure::ingredient_columns(
+                &item.amount_label,
+                item.portion_label.as_deref(),
+                item.portion_count,
+                &item.name,
+            );
             if let Some(variant) = item.variant_label.as_deref().filter(|v| !v.is_empty()) {
                 name = format!("{name}, {variant}");
             }
@@ -493,7 +500,7 @@ fn ingredient_rows(recipe: &Recipe) -> Vec<Row> {
                 name = format!("{name} ({brand})");
             }
             Row {
-                amount: item.amount_label.clone(),
+                amount,
                 name,
                 note: item
                     .note
