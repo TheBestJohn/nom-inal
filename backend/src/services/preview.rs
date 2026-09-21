@@ -44,13 +44,31 @@ const SUB_SIZE: f32 = 36.0;
 /// Space between the last line of the name and the line beneath it.
 const SUB_GAP: f32 = 24.0;
 const MARK_SIZE: f32 = 34.0;
+/// Space between the serving line and the macros beneath it. Tighter than
+/// `SUB_GAP`: the two are one statement about a serving.
+const MACRO_GAP: f32 = 14.0;
+/// The name over a photo is smaller than on a drawn card: the picture is
+/// doing most of the work and the text is a caption on it.
+const PHOTO_NAME_SIZE: f32 = 54.0;
+const PHOTO_NAME_LEADING: f32 = 66.0;
+const PHOTO_NAME_MAX_LINES: usize = 2;
+/// How dark the foot of a photo is taken, under the text.
+const SCRIM_MAX: f32 = 0.82;
+/// Clear air between the top of the text and where the darkening stops being
+/// solid, so no ascender pokes out of its floor.
+const SCRIM_PAD: f32 = 18.0;
+/// The band above that, over which the darkening fades away to nothing.
+const SCRIM_FADE: f32 = 150.0;
+/// Plain white over a photo: the dimmed green reads as a colour cast when the
+/// thing behind it is a photograph rather than the theme's green.
+const ON_PHOTO: Rgb<u8> = Rgb([0xff, 0xff, 0xff]);
 
 /// A photo, cropped to the card's shape rather than letterboxed.
 ///
 /// Cover rather than contain: a preview with bars down the sides looks like a
 /// mistake in every client that shows it, and the middle of a photo of dinner
 /// is the dinner.
-pub fn from_photo(bytes: &[u8]) -> Result<Vec<u8>, ApiError> {
+pub fn from_photo(bytes: &[u8], card: &Card) -> Result<Vec<u8>, ApiError> {
     let image = ImageReader::new(std::io::Cursor::new(bytes))
         .with_guessed_format()
         .map_err(|e| ApiError::Internal(anyhow::anyhow!("reading photo for preview: {e}")))?
@@ -70,15 +88,96 @@ pub fn from_photo(bytes: &[u8]) -> Result<Vec<u8>, ApiError> {
     // To RGB before encoding: a photo with an alpha channel would otherwise
     // produce a card that some clients composite against black.
     let cropped = image::imageops::crop_imm(&scaled, x, y, WIDTH, HEIGHT).to_image();
+    let mut canvas = image::DynamicImage::ImageRgba8(cropped).to_rgb8();
 
-    encode(&image::DynamicImage::ImageRgba8(cropped).to_rgb8())
+    // A photo says what the dish looks like and nothing about what is in it,
+    // so the same lines the drawn card carries go over the foot of it.
+    caption(&mut canvas, card)?;
+
+    encode(&canvas)
 }
 
-/// What the drawn card says.
+/// Darken the foot of a photo and write the recipe's name and figures on it.
+///
+/// The text is laid out first and the darkening is cut to fit it, rather than
+/// the other way round: a fixed-height gradient leaves the top line sitting on
+/// whatever the photograph happens to be, which on a bright one is white text
+/// on near-white. Every line sits on the same fully-darkened floor, and the
+/// darkening fades out above it so it reads as light falling off rather than
+/// as a bar laid across the picture.
+fn caption(canvas: &mut RgbImage, card: &Card) -> Result<(), ApiError> {
+    let font = FontRef::try_from_slice(FONT)
+        .map_err(|e| ApiError::Internal(anyhow::anyhow!("preview font: {e}")))?;
+
+    let name_scale = font.as_scaled(PxScale::from(PHOTO_NAME_SIZE));
+    let sub_scale = font.as_scaled(PxScale::from(SUB_SIZE));
+    let usable = WIDTH as f32 - 2.0 * MARGIN;
+    let lines = wrap_lines(card.name, PHOTO_NAME_MAX_LINES, usable, &|text| {
+        text_width(&name_scale, text)
+    });
+
+    // Baselines from the bottom up: the last line sits a margin off the foot.
+    let macros_baseline = HEIGHT as f32 - MARGIN;
+    let sub_baseline = macros_baseline - MACRO_GAP - SUB_SIZE;
+    let last_name = sub_baseline - SUB_GAP - SUB_SIZE;
+    let first_name = last_name - (lines.len() as f32 - 1.0) * PHOTO_NAME_LEADING;
+    // The top of the tallest thing drawn, not its baseline.
+    let ink_top = first_name - PHOTO_NAME_SIZE;
+
+    let solid_from = (ink_top - SCRIM_PAD).max(0.0);
+    let fade_from = (solid_from - SCRIM_FADE).max(0.0);
+    for y in fade_from as u32..HEIGHT {
+        let alpha = if y as f32 >= solid_from {
+            SCRIM_MAX
+        } else {
+            let t = (y as f32 - fade_from) / (solid_from - fade_from).max(1.0);
+            SCRIM_MAX * t * t
+        };
+        for x in 0..WIDTH {
+            let px = canvas.get_pixel_mut(x, y);
+            for c in 0..3 {
+                px.0[c] = (px.0[c] as f32 * (1.0 - alpha)) as u8;
+            }
+        }
+    }
+
+    let mut baseline = first_name;
+    for line in &lines {
+        draw_text(
+            canvas,
+            &font,
+            PHOTO_NAME_SIZE,
+            MARGIN,
+            baseline,
+            line,
+            ON_PHOTO,
+        );
+        baseline += PHOTO_NAME_LEADING;
+    }
+
+    for (text, at) in [
+        (card.subtitle(), sub_baseline),
+        (card.macros(), macros_baseline),
+    ] {
+        let line = wrap_lines(&text, 1, usable, &|t| text_width(&sub_scale, t))
+            .pop()
+            .unwrap_or_default();
+        draw_text(canvas, &font, SUB_SIZE, MARGIN, at, &line, ON_PHOTO);
+    }
+
+    Ok(())
+}
+
+/// What a card says. Every figure is per serving, which is the number a
+/// person reading a link is deciding about — a whole recipe's totals mean
+/// nothing without knowing how many it feeds.
 pub struct Card<'a> {
     pub name: &'a str,
     pub servings: f64,
     pub calories_per_serving: f64,
+    pub protein_per_serving: f64,
+    pub carbs_per_serving: f64,
+    pub fat_per_serving: f64,
 }
 
 impl Card<'_> {
@@ -89,6 +188,20 @@ impl Card<'_> {
             "{servings} serving{} · {} kcal per serving",
             if self.servings == 1.0 { "" } else { "s" },
             self.calories_per_serving.round()
+        )
+    }
+
+    /// "32 g protein · 28 g carbs · 9 g fat".
+    ///
+    /// Written out rather than in the app's own P/C/F shorthand: this card is
+    /// read in a chat window, at a glance, by people who have never seen the
+    /// application.
+    fn macros(&self) -> String {
+        format!(
+            "{} g protein · {} g carbs · {} g fat",
+            self.protein_per_serving.round(),
+            self.carbs_per_serving.round(),
+            self.fat_per_serving.round(),
         )
     }
 }
@@ -108,7 +221,7 @@ pub fn generated(card: &Card) -> Result<Vec<u8>, ApiError> {
 
     // The name and its subtitle sit as one block, centred in the space above
     // the wordmark, so a one-line name does not hug the top of the card.
-    let block = lines.len() as f32 * NAME_LEADING + SUB_GAP + SUB_SIZE;
+    let block = lines.len() as f32 * NAME_LEADING + SUB_GAP + SUB_SIZE + MACRO_GAP + SUB_SIZE;
     let top = (HEIGHT as f32 - MARK_SIZE - MARGIN - block) / 2.0;
 
     let mut baseline = top + NAME_SIZE;
@@ -141,6 +254,22 @@ pub fn generated(card: &Card) -> Result<Vec<u8>, ApiError> {
         MARGIN,
         sub_baseline,
         &subtitle,
+        DIM,
+    );
+
+    // What is in a serving, under what a serving is. A preview that gives a
+    // calorie figure and nothing else states the price without the goods.
+    let macros = card.macros();
+    let macros = wrap_lines(&macros, 1, usable, &|text| text_width(&sub_scale, text))
+        .pop()
+        .unwrap_or_default();
+    draw_text(
+        &mut canvas,
+        &font,
+        SUB_SIZE,
+        MARGIN,
+        sub_baseline + MACRO_GAP + SUB_SIZE,
+        &macros,
         DIM,
     );
 
@@ -393,12 +522,7 @@ mod tests {
 
     #[test]
     fn a_generated_card_is_a_png_of_the_right_shape() {
-        let png = generated(&Card {
-            name: "Pierogi Ruskie",
-            servings: 4.0,
-            calories_per_serving: 320.0,
-        })
-        .unwrap();
+        let png = generated(&sample()).unwrap();
         assert_eq!(&png[1..4], b"PNG");
         let decoded = image::load_from_memory(&png).unwrap();
         assert_eq!((decoded.width(), decoded.height()), (WIDTH, HEIGHT));
@@ -409,18 +533,34 @@ mod tests {
     /// other assertion here.
     #[test]
     fn a_generated_card_has_text_drawn_on_it() {
-        let png = generated(&Card {
-            name: "Pierogi Ruskie",
-            servings: 4.0,
-            calories_per_serving: 320.0,
-        })
-        .unwrap();
+        let png = generated(&sample()).unwrap();
         let image = image::load_from_memory(&png).unwrap().to_rgb8();
         let inked = image.pixels().filter(|p| **p != GREEN).count();
         assert!(
             inked > 5_000,
             "only {inked} pixels differ from the background"
         );
+    }
+
+    /// One card's figures, so a change to `Card` is one edit here.
+    fn sample() -> Card<'static> {
+        Card {
+            name: "Pierogi Ruskie",
+            servings: 4.0,
+            calories_per_serving: 320.0,
+            protein_per_serving: 12.0,
+            carbs_per_serving: 41.0,
+            fat_per_serving: 9.0,
+        }
+    }
+
+    /// What a serving holds is the reason someone opens the link, so the card
+    /// has to say it, in words a stranger reads rather than the app's own
+    /// shorthand.
+    #[test]
+    fn a_card_states_the_macros_of_one_serving() {
+        assert_eq!(sample().macros(), "12 g protein · 41 g carbs · 9 g fat");
+        assert_eq!(sample().subtitle(), "4 servings · 320 kcal per serving");
     }
 
     #[test]
@@ -436,13 +576,61 @@ mod tests {
             )
             .unwrap();
 
-        let png = from_photo(&source).unwrap();
+        let png = from_photo(&source, &sample()).unwrap();
         let decoded = image::load_from_memory(&png).unwrap();
         assert_eq!((decoded.width(), decoded.height()), (WIDTH, HEIGHT));
     }
 
+    /// The caption is only readable because the photo under it was darkened,
+    /// and the line that matters is the top one — a gradient sized to the
+    /// card rather than to the text left it on bare photo, which on a bright
+    /// picture is white on near-white. Measured, because it is invisible in
+    /// every assertion that only counts pixels.
+    #[test]
+    fn every_caption_line_sits_on_a_darkened_floor() {
+        // Uniform near-white, so anything dark in the result is this code's.
+        let flat = image::RgbImage::from_pixel(1200, 630, Rgb([235, 235, 235]));
+        let mut source = Vec::new();
+        image::DynamicImage::ImageRgb8(flat)
+            .write_to(
+                &mut std::io::Cursor::new(&mut source),
+                image::ImageFormat::Png,
+            )
+            .unwrap();
+
+        let image = image::load_from_memory(&from_photo(&source, &sample()).unwrap())
+            .unwrap()
+            .to_rgb8();
+        // The darkest the floor gets, sampled between the glyphs.
+        let floor = |y: u32| -> u8 {
+            (0..WIDTH)
+                .map(|x| image.get_pixel(x, y).0[0])
+                .min()
+                .unwrap_or(255)
+        };
+
+        assert!(
+            image.get_pixel(5, 5).0[0] > 200,
+            "the top must be untouched"
+        );
+        // Every row the text occupies, from the first name line to the foot.
+        for y in (HEIGHT - 230)..HEIGHT {
+            assert!(
+                floor(y) < 90,
+                "row {y} is only darkened to {}, text there is unreadable",
+                floor(y)
+            );
+        }
+
+        let light = image
+            .enumerate_pixels()
+            .filter(|(_, y, p)| *y > HEIGHT - 230 && p.0[0] > 200)
+            .count();
+        assert!(light > 2_000, "only {light} light pixels: no caption drawn");
+    }
+
     #[test]
     fn a_file_that_is_not_an_image_does_not_produce_a_card() {
-        assert!(from_photo(b"not a photo at all").is_err());
+        assert!(from_photo(b"not a photo at all", &sample()).is_err());
     }
 }

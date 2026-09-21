@@ -8,6 +8,20 @@ section and know what to update.
 
 ## Unreleased
 
+### Link previews say what is in a serving
+
+- The preview image a shared recipe shows in a chat carries its macros, not
+  only its calories: "4 servings · 378 kcal per serving" over "49 g protein ·
+  28 g carbs · 6 g fat". Per serving, which is the number a person deciding
+  whether to cook something is actually deciding about, and written out rather
+  than in the app's own P/C/F shorthand, since the people who see it have
+  never used the app.
+- A recipe with a photo gets the same lines, captioned over the foot of the
+  photo. It previously carried no text at all, so a shared link was a picture
+  of dinner and nothing else. The photo is darkened under the text — sized to
+  the text rather than to the card, so the top line lands on a dark floor
+  instead of on whatever the photograph happens to be.
+
 ### Amounts people actually use
 
 - **Log a count of a household measure, not only a weight.** A food's

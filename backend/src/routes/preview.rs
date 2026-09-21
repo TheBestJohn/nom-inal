@@ -104,14 +104,23 @@ pub async fn preview(
         None => None,
     };
 
-    let calories: f64 = sqlx::query_scalar("SELECT calories_kcal FROM recipe_totals($1)")
-        .bind(resolved.id)
-        .fetch_one(&state.db)
-        .await?;
-    let per_serving = if row.servings > 0.0 {
-        calories / row.servings
+    // The card states a serving, so the totals are divided by the servings
+    // here and nothing downstream has to remember to.
+    let totals: (f64, f64, f64, f64) =
+        sqlx::query_as("SELECT calories_kcal, protein_g, carbs_g, fat_g FROM recipe_totals($1)")
+            .bind(resolved.id)
+            .fetch_one(&state.db)
+            .await?;
+    let share = if row.servings > 0.0 {
+        row.servings
     } else {
-        calories
+        1.0
+    };
+    let per = Serving {
+        calories: totals.0 / share,
+        protein: totals.1 / share,
+        carbs: totals.2 / share,
+        fat: totals.3 / share,
     };
 
     // Decoding, scaling and encoding are CPU-bound and would otherwise stall
@@ -120,11 +129,13 @@ pub async fn preview(
     let bytes = tokio::task::spawn_blocking(move || match photo {
         // A photo that will not decode is not a reason to serve no card: the
         // drawn one still says what the recipe is.
-        Some(bytes) => preview::from_photo(&bytes).or_else(|e| {
-            tracing::warn!(error = ?e, "recipe photo could not be used as a preview");
-            draw(&row.name, row.servings, per_serving)
-        }),
-        None => draw(&row.name, row.servings, per_serving),
+        Some(bytes) => {
+            preview::from_photo(&bytes, &card(&row.name, row.servings, &per)).or_else(|e| {
+                tracing::warn!(error = ?e, "recipe photo could not be used as a preview");
+                draw(&row.name, row.servings, &per)
+            })
+        }
+        None => draw(&row.name, row.servings, &per),
     })
     .await
     .map_err(|e| ApiError::Internal(anyhow::anyhow!("preview task failed: {e}")))??;
@@ -143,12 +154,28 @@ pub async fn preview(
         .into_response())
 }
 
-fn draw(name: &str, servings: f64, calories_per_serving: f64) -> Result<Vec<u8>, ApiError> {
-    preview::generated(&Card {
+/// One serving's figures, so the four numbers travel together rather than as
+/// four arguments in an order nobody can check.
+struct Serving {
+    calories: f64,
+    protein: f64,
+    carbs: f64,
+    fat: f64,
+}
+
+fn card<'a>(name: &'a str, servings: f64, per: &Serving) -> Card<'a> {
+    Card {
         name,
         servings,
-        calories_per_serving,
-    })
+        calories_per_serving: per.calories,
+        protein_per_serving: per.protein,
+        carbs_per_serving: per.carbs,
+        fat_per_serving: per.fat,
+    }
+}
+
+fn draw(name: &str, servings: f64, per: &Serving) -> Result<Vec<u8>, ApiError> {
+    preview::generated(&card(name, servings, per))
 }
 
 /// A strong validator: the same bytes always produce the same tag, and any
